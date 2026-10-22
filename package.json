@@ -1,0 +1,12 @@
+{
+  "name": "our-kitchen",
+  "private": true,
+  "description": "A static recipe site with scaling, unit switching and in-app recipe storage.",
+  "scripts": {
+    "test": "node --test",
+    "validate": "node tools/validate.mjs",
+    "check": "node --test && node tools/validate.mjs",
+    "serve": "python3 -m http.server 8000"
+  },
+  "license": "UNLICENSED"
+}
