@@ -804,9 +804,10 @@
     var pasteBtn = el('button', { type: 'button', text: 'Add these as ingredients', onclick: function () {
       var added = 0;
       paste.value.split(/\r?\n/).forEach(function (line) {
-        var p = L.parseIngredientLine(line);
-        if (!p || !p.name) return;
-        addIngRow(p); added++;
+        L.expandIngredientLine(line).forEach(function (p) {
+          if (!p.name || p.unmeasured) return; // "a splash of..." belongs in a step
+          addIngRow(p); added++;
+        });
       });
       if (added) {
         paste.value = '';
@@ -1048,8 +1049,26 @@
   window.addEventListener('hashchange', route);
   route();
 
-  // Offline support: only where service workers exist (https or localhost).
+  // Footer: which version is running, so "is my phone up to date?" has an answer.
+  document.getElementById('ver').textContent = 'Our Kitchen \u00B7 version ' + L.VERSION;
+
+  function showUpdateBanner() {
+    if (document.getElementById('update-banner')) return;
+    document.body.insertBefore(el('div', { id: 'update-banner', class: 'update-banner', role: 'status' }, [
+      el('span', { text: 'A new version is ready.' }),
+      el('button', { type: 'button', class: 'primary', text: 'Update now', onclick: function () { location.reload(); } })
+    ]), document.body.firstChild);
+  }
+
+  // Offline support: only where service workers exist (https or localhost). New versions are
+  // looked for whenever the app is opened again, and offered through the banner above.
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () { /* optional */ }); });
+    var hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', function () { if (hadController) showUpdateBanner(); });
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').then(function (reg) {
+        document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') reg.update().catch(function () { /* offline */ }); });
+      }).catch(function () { /* optional */ });
+    });
   }
 })();

@@ -41,9 +41,16 @@ npm test           # unit tests for the logic in assets/lib.js (Node 18+, no dep
 npm run validate   # checks every file in recipes/
 npm run check      # both
 npm run build:worker   # regenerate worker/recipe-reader.js after editing lib.js
+npm run bump           # new version number in lib.js, index.html and sw.js (do this with every site change)
 ```
 
 CI runs the tests and the recipe validator on every pull request.
+
+## Updates and versions
+
+The footer shows the running version. Every file request bypasses the browser's cache, the page URLs carry a
+version stamp, and when a newer version arrives while the app is open an **Update now** banner appears.
+Run `npm run bump` with each change (a test checks that the version matches everywhere).
 
 ## Publish
 
