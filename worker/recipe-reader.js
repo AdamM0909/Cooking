@@ -79,6 +79,8 @@
     }
     // Weights with no cup equivalent keep the family they were written in.
     if (mode === 'cups' && kind === 'w') mode = u.sys === 'metric' ? 'metric' : 'oz';
+    // Nobody measures a teaspoon of salt in fluid ounces: small volumes stay in spoons.
+    if (mode === 'oz' && kind === 'v' && base < 60) mode = 'cups';
     return pick(base, kind, mode);
   }
 
@@ -119,19 +121,32 @@
     tsp: 'tsp', teaspoon: 'tsp', teaspoons: 'tsp', g: 'g', gram: 'g', grams: 'g', kg: 'kg', kilogram: 'kg',
     kilograms: 'kg', ml: 'ml', milliliter: 'ml', milliliters: 'ml', millilitre: 'ml', millilitres: 'ml',
     l: 'l', liter: 'l', liters: 'l', litre: 'l', litres: 'l', oz: 'oz', ounce: 'oz', ounces: 'oz',
-    lb: 'lb', lbs: 'lb', pound: 'lb', pounds: 'lb', pinch: 'pinch'
+    lb: 'lb', lbs: 'lb', pound: 'lb', pounds: 'lb', pinch: 'pinch', stick: 'stick', sticks: 'stick'
   };
+
+  var STICK_TBSP = 8; // tablespoons in a US stick of butter
 
   // "1 1/2 cups flour, sifted" -> { amount: 1.5, unit: 'cup', name: 'flour, sifted' }
   // "1 cup (125 g) flour" also gives grams_per_cup: 125 so the weight is remembered.
+  // Loose wording is turned into an amount and flagged in `estimated`: "salt to taste",
+  // "splash of hot sauce". "1/2-1 tsp" keeps the lower figure and the range in the name.
   function parseIngredientLine(line) {
-    var s = String(line).replace(/^[\s\-*\u2022]+/, '').trim();
+    var s = String(line).replace(/^[\s\-*•]+/, '').trim();
     if (!s) return null;
-    var m = /^([\d\s/.\u00BC-\u00BE\u2150-\u215E-]+)(.*)$/.exec(s);
-    var amount = NaN, rest = s, unit = '';
+    var sp = /^(?:a\s+)?(splash|drizzle)\s+of\s+(.+)$/i.exec(s);
+    if (sp) {
+      var what = sp[2].trim(), word = sp[1].toLowerCase();
+      return { amount: 1, unit: 'tsp', name: what + ' (a ' + word + ')', estimated: 'a ' + word + ' of ' + what + ' = 1 tsp' };
+    }
+    var m = /^([\d\s/.¼-¾⅐-⅞-]+)(.*)$/.exec(s);
+    var amount = NaN, rest = s, unit = '', rangeText = '';
     if (m) {
       amount = parseAmount(m[1]);
-      if (isFinite(amount)) rest = m[2].trim(); else rest = s;
+      if (isFinite(amount)) {
+        rest = m[2].trim();
+        var t = m[1].trim();
+        if (!/^\d+-\d+\/\d+$/.test(t) && /\d\s*(?:-|–|to)\s*[\d¼-¾⅐-⅞]/i.test(t)) rangeText = t;
+      } else rest = s;
     }
     if (!isFinite(amount)) {
       // "a pinch of salt", "an egg", "a cup of milk", "half a lemon"
@@ -152,6 +167,7 @@
         rest = rest.slice(w[0].length);
       }
     }
+    if (unit === 'stick') { unit = 'tbsp'; amount *= STICK_TBSP; }
     rest = rest.replace(/^of\s+/i, '').trim();
     var gpc;
     rest = rest.replace(/\(\s*([\d.]+)\s*(g|grams?|oz|ounces?)\.?\s*\)/i, function (all, n, u) {
@@ -163,11 +179,91 @@
       }
       return '';
     });
-    rest = rest.replace(/\(\s*[\d./\s\u00BC-\u00BE\u2150-\u215E-]+\s*(?:ml|l|g|kg|oz|lb|lbs|cups?|tbsp|tsp|fl\.?\s*oz)\.?\s*\)/gi, '');
+    rest = rest.replace(/\(\s*[\d./\s¼-¾⅐-⅞-]+\s*(?:ml|l|g|kg|oz|lb|lbs|cups?|tbsp|tsp|fl\.?\s*oz)\.?\s*\)/gi, '');
     rest = rest.replace(/\s{2,}/g, ' ').replace(/\s+,/g, ',').trim();
+    if (rangeText) rest += ' (' + rangeText + (unit ? ' ' + LABEL[unit] : '') + ')';
+    rest = tidyName(rest);
     var out = { amount: isFinite(amount) ? amount : '', unit: unit, name: rest };
+    if (!isFinite(amount) && /\bto taste\b/i.test(rest)) {
+      var base = tidyName(rest.replace(/\s*,?\s*\bto taste\b/i, '').trim());
+      out = { amount: 0.25, unit: 'tsp', name: base + ' (to taste)', estimated: base + ' to taste = 1/4 tsp to start' };
+    }
     if (gpc) out.grams_per_cup = gpc;
     return out;
+  }
+
+  // "Dill pickles" -> "dill pickles", but keep "AP flour" and "Hidden Valley Ranch seasoning".
+  function tidyName(n) {
+    n = String(n).trim();
+    return /^[A-Z][a-z]+(?:\s|$)/.test(n) && !/[A-Z]/.test(n.slice(1).replace(/^[a-z]+/, '')) ? n.charAt(0).toLowerCase() + n.slice(1) : n;
+  }
+
+  function cleanGroup(t) {
+    t = String(t).replace(/[:\-]+\s*$/, '').replace(/^for\s+(?:the\s+)?/i, '').replace(/\s+/g, ' ').trim();
+    return t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
+  }
+
+  // One pasted line can mean several ingredients:
+  //   "1 tsp: salt, pepper, paprika"            -> three ingredients at 1 tsp each
+  //   "Salt and pepper to taste"                -> two ingredients
+  //   "Garlic butter (1/2 stick butter, 2 cloves garlic, parsley)" -> a small group
+  //   "Optional: 1/2 tsp msg"                   -> marked (optional)
+  function expandIngredientLine(line) {
+    var s = String(line).replace(/^[\s\-*•]+/, '').trim(), optional = false, items = [], m;
+    if (!s) return items;
+    s = s.replace(/^\(?optional\)?\s*[:\-]?\s*/i, function () { optional = true; return ''; });
+    function one(text) {
+      var q = parseIngredientLine(text);
+      if (q && q.name) {
+        if (optional) q.name = /\)$/.test(q.name) ? q.name.slice(0, -1) + ', optional)' : q.name + ' (optional)';
+        items.push(q);
+      }
+    }
+    m = /^([^()]{2,60}?)\s*\(([^()]*,[^()]*)\)\s*$/.exec(s);
+    if (m) {
+      var parts = m[2].split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+      var counted = parts.filter(function (x) { return /^[\d¼-¾⅐-⅞]/.test(x); }).length;
+      if (counted >= 2) {
+        var g = cleanGroup(m[1]);
+        parts.forEach(one);
+        items.forEach(function (q) { if (g) q.group = g; });
+        return items;
+      }
+    }
+    var amt = '(?:\\d[\\d\\s/.]*|[\\u00BC-\\u00BE\\u2150-\\u215E])';
+    m = new RegExp('^(' + amt + '(?:\\s*(?:-|\\u2013|to)\\s*' + amt + ')?)\\s*([a-zA-Z]+\\.?)?\\s*:\\s*(.+)$', 'i').exec(s);
+    if (m) {
+      var uw = m[2] ? m[2].replace(/\.$/, '') : '';
+      if (!uw || UNIT_WORDS[uw.toLowerCase()]) {
+        m[3].split(/\s*,\s*|\s+and\s+/i).forEach(function (n) {
+          n = n.trim();
+          if (n) one(m[1].trim() + (uw ? ' ' + uw : '') + ' ' + n);
+        });
+        return items;
+      }
+    }
+    m = /^(.+?)\s*,?\s+to taste$/i.exec(s);
+    if (m && !/\d/.test(m[1])) {
+      m[1].split(/\s*,\s*|\s+and\s+/i).forEach(function (n) { n = n.trim(); if (n) one(n + ' to taste'); });
+      return items;
+    }
+    one(s);
+    return items;
+  }
+
+  // Typical grams in one US cup for common dry or solid ingredients, used only when the
+  // recipe does not give its own weight. Liquids are left out on purpose (ml suits them).
+  var TYPICAL_G_PER_CUP = [
+    [/\bpeanut butter\b/i, 258], [/\bcream cheese\b/i, 232], [/\bbrown sugar\b/i, 213],
+    [/\b(powdered|confectioners'?|icing) sugar\b/i, 120], [/\bbread flour\b/i, 127], [/\bwhole[- ]wheat flour\b/i, 120],
+    [/\balmond flour\b/i, 96], [/\bcornstarch|corn starch\b/i, 128], [/\b(?:flour|ap flour)\b/i, 125],
+    [/\bbaking powder\b/i, 230], [/\bbaking soda\b/i, 288],
+    [/\bsugar\b/i, 200], [/\bbutter\b/i, 227], [/\bcocoa\b/i, 85], [/\b(?:rolled )?oats\b/i, 90],
+    [/\bmayo(?:nnaise)?\b/i, 220], [/\bsour cream\b/i, 230], [/\brice\b/i, 185]
+  ];
+  function typicalGramsPerCup(name) {
+    for (var i = 0; i < TYPICAL_G_PER_CUP.length; i++) if (TYPICAL_G_PER_CUP[i][0].test(name)) return TYPICAL_G_PER_CUP[i][1];
+    return 0;
   }
 
   // 0.3333 -> "1/3", 1.5 -> "1 1/2", 2 -> "2": friendlier to read and edit than raw decimals.
@@ -185,11 +281,19 @@
 
   function pad4(n) { return ('000' + n).slice(-4); }
 
+  function addIngredientLine(out, line, group) {
+    expandIngredientLine(line).forEach(function (q) {
+      q.id = pad4(out.ingredients.length + 1);
+      if (!q.group && group) q.group = group;
+      out.ingredients.push(q);
+    });
+  }
+
   // Turns a pasted recipe (title, then "Ingredients" and "Instructions" sections) into
   // form-ready data. Anything it cannot place is left for the person to fix by hand.
   function parseRecipeText(text) {
     var out = { title: '', base_servings: '', ingredients: [], steps: [], notes: '' };
-    var section = '', n = 1, noteLines = [];
+    var section = '', group = '', noteLines = [];
     var ingH = /^#*\s*ingredients?\s*:?$/i;
     var stepH = /^#*\s*(instructions?|directions?|method|steps?|preparation|procedure)\s*:?$/i;
     var noteH = /^#*\s*(notes?|tips?)\s*:?$/i;
@@ -205,9 +309,8 @@
       }
       if (!section) { if (!out.title) out.title = line.replace(/^#+\s*/, ''); return; }
       if (section === 'ing') {
-        if (/:$/.test(line)) return; // sub-heading such as "For the sauce:"
-        var p = parseIngredientLine(line);
-        if (p && p.name) { p.id = pad4(n++); out.ingredients.push(p); }
+        if (/:$/.test(line) && !/\d/.test(line)) { group = cleanGroup(line); return; } // "For the sauce:"
+        addIngredientLine(out, line, group);
       } else if (section === 'step') {
         var t = line.replace(/^(?:step\s*)?\d+\s*[.):-]\s*/i, '');
         if (t) out.steps.push({ title: '', text: t });
@@ -344,24 +447,39 @@
 
   var NOISE = /^(print( recipe)?|pin( it| recipe)?|share|save( recipe)?|jump to( recipe)?|skip to|rate( this)?|review|reviews?|comments?|leave a (comment|review)|advertisement|ads?|subscribe|sign up|nutrition( facts| information)?|calories|prep(aration)? time|cook time|total time|course|cuisine|author|print|email|facebook|twitter|instagram|tweet|home|menu|search|recipes?|like|reply|\d+(\.\d+)? ?(stars?|ratings?|votes?|reviews?)|\(\d+\))\b.*$/i;
   var ING_START = /^(?:[-*•]\s*)?(?:\d|[¼-¾⅐-⅞]|(?:a|an|one|two|three|half|pinch|dash|handful|splash)\s)/i;
+  var BULLET = /^\s*[-*•]\s+/;
 
-  // No headings at all: decide line by line what looks like an ingredient and what a step.
+  // A line like "Dredge:" or "For the sauce" that names a part of the recipe.
+  function isGroupHeading(line) {
+    return !BULLET.test(line) && line.length <= 60 && !/\d/.test(line) && (/:$/.test(line) || /^for (?:the )?\S/i.test(line));
+  }
+
+  // No Ingredients/Instructions headings: decide line by line what looks like an ingredient,
+  // a section heading, or a step. Bulleted lists and "Dredge:" style headings are understood.
   function guessRecipe(text) {
-    var out = { title: '', base_servings: '', ingredients: [], steps: [], notes: '', how: 'guess' }, n = 1;
-    text.split(/\r?\n/).forEach(function (raw) {
+    var out = { title: '', base_servings: '', ingredients: [], steps: [], notes: '', how: 'guess' }, group = '', inIngs = false;
+    String(text).split(/\r?\n/).forEach(function (raw) {
       var line = raw.replace(/\s+/g, ' ').trim(), m;
       if (!line || NOISE.test(line) && line.length < 60) return;
       if ((m = /^(?:serves|servings|yield|makes)\s*:?\s*(\d+)/i.exec(line))) { if (!out.base_servings) out.base_servings = Number(m[1]); return; }
-      var numbered = /^(?:step\s*)?\d+\s*[.):-]\s+\S/i.test(line);
-      if (!out.title && !numbered && line.length <= 80 && !ING_START.test(line) && !/[.!?]$/.test(line)) { out.title = line; return; }
-      if (!numbered && ING_START.test(line) && line.length <= 110) {
-        var q = parseIngredientLine(line);
-        if (q && q.name) { q.id = pad4(n++); out.ingredients.push(q); }
-      } else if (numbered || line.length >= 25) {
-        out.steps.push({ title: '', text: line.replace(/^(?:step\s*)?\d+\s*[.):-]\s*/i, '') });
+      var bullet = BULLET.test(line);
+      var numbered = !bullet && /^(?:step\s*)?\d+\s*[.):-]\s+\S/i.test(line);
+      if (!bullet && !numbered && isGroupHeading(line)) { group = cleanGroup(line); inIngs = true; return; }
+      if (!out.title && !bullet && !numbered && !ING_START.test(line) && line.length <= 80 && !/[.!?:]$/.test(line)) { out.title = line; return; }
+      var asStep = numbered || (bullet && (line.length > 100 || (/[.!?]$/.test(line) && line.length > 45)));
+      var asIng = !asStep && (bullet || (inIngs && line.length < 90 && !/[.!?]$/.test(line)) || (ING_START.test(line) && line.length <= 110));
+      if (asIng) addIngredientLine(out, line, group);
+      else if (asStep || line.length >= 25) {
+        inIngs = false;
+        out.steps.push({ title: '', text: line.replace(/^[-*•]\s+/, '').replace(/^(?:step\s*)?\d+\s*[.):-]\s*/i, '') });
       }
     });
     return out;
+  }
+
+  function listNames(names, max) {
+    var shown = names.slice(0, max).join(', ');
+    return names.length > max ? shown + ' and ' + (names.length - max) + ' more' : shown;
   }
 
   // Takes whatever was pasted (page source, JSON-LD, a copied page, a recipe typed out) and
@@ -381,22 +499,43 @@
         var g = guessRecipe(text);
         if (g.ingredients.length + g.steps.length > p.ingredients.length + p.steps.length) {
           g.notes = g.notes || p.notes; p = g;
-          warnings.push('I could not find "Ingredients" and "Instructions" headings, so I guessed which lines are ingredients and which are steps. Please check them.');
+          warnings.push('There were no "Ingredients" and "Instructions" headings, so I worked out which lines are ingredients and which are steps. Please check them.');
         }
       }
       p.credit = ''; p.tags = []; p.sources = [];
       if (sourceUrl && /^https?:\/\//i.test(sourceUrl)) p.sources.push({ title: sourceUrl.replace(/^https?:\/\//i, '').split('/')[0], url: sourceUrl });
     }
+
+    var groups = [];
+    p.ingredients.forEach(function (i) { if (i.group && groups.indexOf(i.group) < 0) groups.push(i.group); });
+    if (groups.length) warnings.push('Kept ' + groups.length + ' ingredient section' + (groups.length === 1 ? '' : 's') + ': ' + groups.join(', ') + '.');
+
+    // typical weights for dry ingredients so cups, grams and ounces can switch
+    var typical = [];
+    p.ingredients.forEach(function (i) {
+      if (i.grams_per_cup || !(i.unit === 'cup' || i.unit === 'tbsp' || i.unit === 'tsp')) return;
+      var d = typicalGramsPerCup(i.name);
+      if (d) { i.grams_per_cup = d; typical.push(i.name.replace(/\s*\(.*$/, '').replace(/,.*$/, '')); }
+    });
+    if (typical.length) warnings.push('Filled in typical weights per cup for ' + listNames(typical, 4) + ' so cups, grams and ounces can switch. Edit them if yours differ.');
+
     var linked = autoLinkSteps(p.ingredients, p.steps);
     p.steps = linked.steps;
     var timers = 0;
     p.steps.forEach(function (st) { var t = detectTimer(st.text); if (t) { st.timer_seconds = t; timers++; } });
     if (linked.linked) warnings.push('Linked ' + linked.linked + ' amount' + (linked.linked === 1 ? '' : 's') + ' inside the steps so they scale. Check that they read sensibly.');
     if (timers) warnings.push('Added ' + timers + ' timer' + (timers === 1 ? '' : 's') + ' from the times in the steps. Clear any you do not want.');
-    var noAmt = p.ingredients.filter(function (i) { return i.amount === ''; }).length;
-    if (noAmt) warnings.push(noAmt + ' ingredient' + (noAmt === 1 ? ' has' : 's have') + ' no amount (for example "salt to taste"). Give each a starting amount.');
-    var withG = p.ingredients.filter(function (i) { return i.grams_per_cup; }).length;
-    if (withG) warnings.push('Picked up weights for ' + withG + ' ingredient' + (withG === 1 ? '' : 's') + ' from the brackets, so they can switch exactly between cups and grams.');
+
+    var est = [];
+    p.ingredients.forEach(function (i) { if (i.estimated && est.indexOf(i.estimated) < 0) est.push(i.estimated); });
+    if (est.length) warnings.push('Estimated amounts for loose wording (change them if you like): ' + est.join('; ') + '.');
+    var noAmt = p.ingredients.filter(function (i) { return i.amount === ''; }).map(function (i) { return i.name; });
+    if (noAmt.length) warnings.push(noAmt.length + ' ingredient' + (noAmt.length === 1 ? ' has' : 's have') + ' no amount and need one before saving: ' + listNames(noAmt, 5) + '.');
+    var withG = p.ingredients.filter(function (i) { return i.grams_per_cup; }).length - typical.length;
+    if (withG > 0) warnings.push('Picked up weights for ' + withG + ' ingredient' + (withG === 1 ? '' : 's') + ' from the brackets, so they can switch exactly between cups and grams.');
+    if (p.ingredients.length && !p.steps.length) warnings.push('No steps found. Add the method below.');
+    if (!p.title) warnings.push('No title found. Give it one above.');
+    if (p.ingredients.length && !p.base_servings) warnings.push('It did not say how many it serves. Set the number above.');
     p.warnings = warnings;
     return p;
   }
@@ -421,6 +560,7 @@
       var amount = Number(x.amount);
       if (!(amount > 0)) return { error: label + ' (' + name + ') needs an amount above 0.' };
       var ing = { id: id, name: name, amount: amount };
+      if (typeof x.group === 'string' && x.group.trim()) ing.group = x.group.trim().slice(0, 60);
       if (x.unit) {
         if (!UNITS[x.unit]) return { error: label + ' (' + name + ') has an unknown unit.' };
         ing.unit = x.unit;
@@ -432,7 +572,7 @@
       }
       ings.push(ing);
     }
-    if (!Array.isArray(r.steps) || !r.steps.length) return { error: 'Add at least one step.' };
+    if (!Array.isArray(r.steps)) return { error: 'Steps must be a list.' };
     var steps = [];
     for (var j = 0; j < r.steps.length; j++) {
       var st = r.steps[j] || {}, text = typeof st.text === 'string' ? st.text.trim() : '';
@@ -543,7 +683,7 @@
     convert: convert, formatAmount: formatAmount, parseAmount: parseAmount, parseIngredientLine: parseIngredientLine,
     parseRecipeText: parseRecipeText, normalize: normalize, slugify: slugify, uniqueSlug: uniqueSlug,
     combineIngredients: combineIngredients, encodeShare: encodeShare, decodeShare: decodeShare, nameKey: nameKey,
-    smartParse: smartParse, amountToInput: amountToInput, recipeFromJsonLd: recipeFromJsonLd, extractJsonLdRecipe: extractJsonLdRecipe, htmlToText: htmlToText,
+    smartParse: smartParse, amountToInput: amountToInput, expandIngredientLine: expandIngredientLine, recipeFromJsonLd: recipeFromJsonLd, extractJsonLdRecipe: extractJsonLdRecipe, htmlToText: htmlToText,
     decodeEntities: decodeEntities, detectTimer: detectTimer, autoLinkSteps: autoLinkSteps, looksLikeUrl: looksLikeUrl
   };
 });

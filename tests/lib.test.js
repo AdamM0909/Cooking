@@ -24,7 +24,7 @@ test('parseIngredientLine splits amount, unit and name', () => {
   assert.deepEqual(L.parseIngredientLine('1 large egg'), { amount: 1, unit: '', name: 'large egg' });
   assert.deepEqual(L.parseIngredientLine('½ tsp salt'), { amount: 0.5, unit: 'tsp', name: 'salt' });
   assert.deepEqual(L.parseIngredientLine('2 fl oz milk'), { amount: 2, unit: 'fl_oz', name: 'milk' });
-  assert.deepEqual(L.parseIngredientLine('salt to taste'), { amount: '', unit: '', name: 'salt to taste' });
+  assert.deepEqual(L.parseIngredientLine('a few basil leaves'), { amount: '', unit: '', name: 'a few basil leaves' });
   assert.equal(L.parseIngredientLine('   '), null);
 });
 
@@ -140,4 +140,19 @@ test('shopping list treats common qualifiers as the same ingredient', () => {
   assert.equal(out.length, 4); // flour, egg, salted butter, unsalted butter stay distinct
   assert.equal(out.find(x => /flour/.test(x.name)).items[0].amount, 150);
   assert.equal(out.find(x => /egg/.test(x.name)).items[0].amount, 2);
+});
+
+test('a recipe may be saved with no steps yet', () => {
+  const r = L.normalize({ title: 'Sauce parts', base_servings: 2, ingredients: [{ id: '0001', name: 'a', amount: 1 }], steps: [] });
+  assert.ok(r.recipe, r.error);
+  assert.deepEqual(r.recipe.steps, []);
+  assert.match(L.normalize({ title: 'x', base_servings: 2, ingredients: [{ id: '0001', name: 'a', amount: 1 }] }).error, /Steps/);
+});
+
+test('small spoon amounts stay in spoons in the Ounces view; big volumes become fluid ounces', () => {
+  assert.equal(L.formatAmount({ amount: 1, unit: 'tsp' }, 1, 'oz'), '1 tsp');
+  assert.equal(L.formatAmount({ amount: 2, unit: 'tbsp' }, 1, 'oz'), '2 tbsp');
+  assert.equal(L.formatAmount({ amount: 1, unit: 'tsp' }, 3, 'oz'), '1 tbsp');
+  assert.equal(L.formatAmount({ amount: 1, unit: 'cup' }, 1, 'oz'), '8 fl oz');
+  assert.equal(L.formatAmount({ amount: 1, unit: 'tsp', grams_per_cup: 230 }, 1, 'oz'), '0.2 oz'); // with a weight, ounces by weight
 });

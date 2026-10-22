@@ -83,7 +83,7 @@ Toss the pasta through the sauce and serve.`;
   assert.equal(p.ingredients[0].unit, 'g');
   assert.equal(p.steps.length, 3);
   assert.equal(p.steps[0].timer_seconds, 600);
-  assert.ok(p.warnings.some(w => /guessed/.test(w)));
+  assert.ok(p.warnings.some(w => /worked out/.test(w)));
 });
 
 test('pasted HTML without structured data is turned into text first', () => {
@@ -141,4 +141,75 @@ test('amountToInput gives readable text that parses back', () => {
   }
   assert.equal(L.amountToInput(0), '');
   assert.equal(L.amountToInput('x'), '');
+});
+
+// A real pasted recipe: bulleted lists under "Name:" headings, shared-unit lines, no steps, no title.
+test('bulleted recipe with sections, shared units and loose wording is read correctly', () => {
+  const text = fs.readFileSync(path.join(__dirname, 'fixtures', 'fried-chicken-sliders.txt'), 'utf8');
+  const p = L.smartParse(text);
+  const names = (g) => p.ingredients.filter(i => i.group === g).map(i => i.name);
+  const find = (n) => p.ingredients.find(i => i.name === n);
+
+  // nothing is invented: no title, no steps, no servings
+  assert.equal(p.title, '');
+  assert.equal(p.steps.length, 0);
+  assert.equal(p.base_servings, '');
+  assert.equal(p.ingredients.length, 43);
+  assert.deepEqual([...new Set(p.ingredients.map(i => i.group))],
+    ['Chicken marinade', 'Dredge', 'Hot honey glaze', 'Homemade buttermilk ranch', 'Sliders', 'Garlic butter']);
+
+  // "1 tsp: a, b, c" becomes separate ingredients at 1 tsp each
+  assert.deepEqual(names('Chicken marinade').slice(2, 9),
+    ['salt', 'pepper', 'chicken bouillon powder', 'cayenne', 'garlic powder', 'onion powder', 'paprika']);
+  assert.deepEqual(p.ingredients.filter(i => i.group === 'Dredge' && i.unit === 'tsp').map(i => i.amount), [1, 1, 1, 1, 1, 1, 1]);
+  assert.equal(p.ingredients[2].amount, 0.5);
+
+  // loose wording becomes flagged estimates, optional items are marked
+  assert.deepEqual(find('hot sauce (a splash)'), { amount: 1, unit: 'tsp', name: 'hot sauce (a splash)', estimated: 'a splash of hot sauce = 1 tsp', id: '0011', group: 'Chicken marinade' });
+  assert.equal(find('msg (optional)').amount, 0.5);
+  assert.equal(find('cayenne (1/2-1 tsp, optional)').amount, 0.5);
+  assert.equal(find('salt (to taste)').amount, 0.25);
+  assert.ok(find('pepper (to taste)'));
+
+  // a stick of butter is 8 tablespoons, with a typical weight filled in
+  const butter = p.ingredients.find(i => i.name === 'unsalted butter');
+  assert.equal(butter.amount, 4); assert.equal(butter.unit, 'tbsp'); assert.equal(butter.grams_per_cup, 227);
+  assert.equal(p.ingredients.find(i => i.name === 'AP flour').grams_per_cup, 125);
+  assert.equal(p.ingredients.find(i => i.name === 'honey').grams_per_cup, undefined); // liquids stay in ml
+
+  // "Name (a, b, c)" expands into its own section
+  assert.deepEqual(names('Garlic butter'), ['butter', 'cloves grated garlic', 'minced parsley']);
+  assert.equal(names('Sliders').length, 2);
+
+  // capitals are tidied only when safe
+  assert.ok(find('Hidden Valley Ranch seasoning'));
+  assert.ok(find('dill pickles'));
+
+  // the person is told what still needs attention, once each
+  const w = p.warnings.join('\n');
+  assert.match(w, /6 ingredient sections/);
+  assert.match(w, /No steps found/);
+  assert.match(w, /No title found/);
+  assert.match(w, /how many it serves/);
+  assert.match(w, /3 ingredients have no amount/);
+  assert.equal((w.match(/salt to taste = 1\/4 tsp/g) || []).length, 1);
+  assert.equal(p.ingredients.filter(i => i.name.includes('(to taste)') && i.estimated).length, 3); // hot sauce already has an amount
+});
+
+test('groups survive validation and shopping list merging ignores them', () => {
+  const r = L.normalize({ title: 'T', base_servings: 2,
+    ingredients: [{ id: '0001', name: 'butter', amount: 1, unit: 'tbsp', group: 'Sauce' }, { id: '0002', name: 'butter', amount: 2, unit: 'tbsp', group: 'Dough' }],
+    steps: [{ text: 'Cook.' }] });
+  assert.ok(r.recipe, r.error);
+  assert.equal(r.recipe.ingredients[0].group, 'Sauce');
+  const out = L.combineIngredients([{ recipe: r.recipe, servings: 2 }]);
+  assert.equal(out.length, 1);
+  assert.equal(Math.round(out[0].items[0].amount), 44); // 3 tbsp of butter in ml
+});
+
+test('shared-unit and wording helpers', () => {
+  const names = (s) => L.expandIngredientLine(s).map(i => i.name);
+  assert.deepEqual(names('2 tbsp: sugar, salt and pepper'), ['sugar', 'salt', 'pepper']);
+  assert.deepEqual(names('Salt, pepper and paprika to taste'), ['salt (to taste)', 'pepper (to taste)', 'paprika (to taste)']);
+  assert.deepEqual(names('Optional: fresh chives'), ['fresh chives (optional)']);
 });
