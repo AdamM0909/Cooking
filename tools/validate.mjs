@@ -24,6 +24,7 @@ for (const slug of slugs) {
     ids.add(i.id);
     if (!i.name) fail(slug, `ingredient ${i.id} has no name`);
     if (typeof i.amount !== 'number' || !(i.amount > 0)) fail(slug, `ingredient ${i.id} amount must be a positive number`);
+    if (i.grams_per_cup !== undefined && !(i.grams_per_cup > 0)) fail(slug, `ingredient ${i.id} grams_per_cup must be a positive number`);
     if (i.unit !== undefined && !UNITS.includes(i.unit)) fail(slug, `ingredient ${i.id} has unknown unit "${i.unit}"`);
   }
   if (!ids.size) fail(slug, 'no ingredients');

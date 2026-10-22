@@ -4,13 +4,13 @@
   "credit": "Placeholder to show the format. Delete me once real recipes are in.",
   "base_servings": 4,
   "ingredients": [
-    { "id": "0001", "name": "all-purpose flour", "amount": 1.5, "unit": "cup" },
-    { "id": "0002", "name": "baking powder", "amount": 3.5, "unit": "tsp" },
-    { "id": "0003", "name": "salt", "amount": 1, "unit": "tsp" },
-    { "id": "0004", "name": "sugar", "amount": 1, "unit": "tbsp" },
+    { "id": "0001", "name": "all-purpose flour", "amount": 1.5, "unit": "cup", "grams_per_cup": 125 },
+    { "id": "0002", "name": "baking powder", "amount": 3.5, "unit": "tsp", "grams_per_cup": 230 },
+    { "id": "0003", "name": "salt", "amount": 1, "unit": "tsp", "grams_per_cup": 288 },
+    { "id": "0004", "name": "sugar", "amount": 1, "unit": "tbsp", "grams_per_cup": 200 },
     { "id": "0005", "name": "milk", "amount": 1.25, "unit": "cup" },
     { "id": "0006", "name": "large egg", "amount": 1 },
-    { "id": "0007", "name": "butter, melted, plus extra for the pan", "amount": 3, "unit": "tbsp" }
+    { "id": "0007", "name": "butter, melted, plus extra for the pan", "amount": 3, "unit": "tbsp", "grams_per_cup": 227 }
   ],
   "steps": [
     { "title": "Mix the dry ingredients", "text": "Whisk {0001} flour, {0002} baking powder, {0003} salt and {0004} sugar in a large bowl." },

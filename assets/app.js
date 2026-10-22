@@ -19,7 +19,7 @@
   var LABEL = { g: 'g', kg: 'kg', ml: 'ml', l: 'l', tsp: 'tsp', tbsp: 'tbsp', cup: 'cup', fl_oz: 'fl oz', oz: 'oz', lb: 'lb', pinch: 'pinch' };
 
   var app = document.getElementById('app');
-  var state = { system: loadPref('system') || 'us' };
+  var state = { mode: loadPref('mode') || 'cups' };
 
   function loadPref(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function savePref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
@@ -48,30 +48,51 @@
     return (whole ? String(whole) : '') + (whole && best[1] ? ' ' : '') + best[1];
   }
 
-  function metricString(x) {
+  function decimalString(x) {
     if (x >= 10) return String(Math.round(x));
     return String(Math.round(x * 10) / 10);
   }
 
-  // Convert to the chosen system only when the source unit is in the other one.
-  function convert(amount, unit, system) {
-    var u = UNITS[unit];
-    if (!u || u.sys === 'both' || u.sys === system) return { amount: amount, unit: unit };
-    var base = amount * u.f;
-    if (system === 'metric') {
-      if (u.kind === 'w') return base >= 1000 ? { amount: base / 1000, unit: 'kg' } : { amount: base, unit: 'g' };
+  // Which units each display mode uses.
+  var FAMILY = {
+    cups:   ['cup', 'tbsp', 'tsp'],
+    metric: ['g', 'kg', 'ml', 'l'],
+    oz:     ['oz', 'lb', 'fl_oz']
+  };
+
+  // base is grams (kind 'w') or millilitres (kind 'v'); pick a sensible unit in the mode.
+  function pick(base, kind, mode) {
+    if (mode === 'metric') {
+      if (kind === 'w') return base >= 1000 ? { amount: base / 1000, unit: 'kg' } : { amount: base, unit: 'g' };
       return base >= 1000 ? { amount: base / 1000, unit: 'l' } : { amount: base, unit: 'ml' };
     }
-    if (u.kind === 'w') return base >= UNITS.lb.f ? { amount: base / UNITS.lb.f, unit: 'lb' } : { amount: base / UNITS.oz.f, unit: 'oz' };
-    if (base >= UNITS.cup.f / 4) return { amount: base / UNITS.cup.f, unit: 'cup' };
+    if (mode === 'oz' || kind === 'w') {
+      if (kind === 'w') return base >= UNITS.lb.f ? { amount: base / UNITS.lb.f, unit: 'lb' } : { amount: base / UNITS.oz.f, unit: 'oz' };
+      return { amount: base / UNITS.fl_oz.f, unit: 'fl_oz' };
+    }
+    if (base >= UNITS.cup.f / 3 - 0.5) return { amount: base / UNITS.cup.f, unit: 'cup' };
     if (base >= 14) return { amount: base / UNITS.tbsp.f, unit: 'tbsp' };
     return { amount: base / UNITS.tsp.f, unit: 'tsp' };
   }
 
-  function formatAmount(amount, unit, scale) {
-    var c = unit ? convert(amount * scale, unit, state.system) : { amount: amount * scale, unit: '' };
-    var metric = c.unit && UNITS[c.unit].sys === 'metric';
-    var text = metric ? metricString(c.amount) : fractionString(c.amount);
+  // Ingredients with grams_per_cup convert between volume and weight exactly.
+  // At the written serving size, a unit already in the chosen mode is shown as written.
+  function convert(ing, scale, mode) {
+    var amount = ing.amount * scale, u = ing.unit && UNITS[ing.unit];
+    if (!u || u.sys === 'both') return { amount: amount, unit: ing.unit || '' };
+    if (scale === 1 && FAMILY[mode].indexOf(ing.unit) >= 0) return { amount: amount, unit: ing.unit };
+    var kind = u.kind, base = amount * u.f, d = ing.grams_per_cup;
+    if (d) {
+      var grams = kind === 'w' ? base : base * d / UNITS.cup.f;
+      if (mode === 'cups') { kind = 'v'; base = grams * UNITS.cup.f / d; } else { kind = 'w'; base = grams; }
+    }
+    return pick(base, kind, mode);
+  }
+
+  function formatAmount(ing, scale) {
+    var c = convert(ing, scale, state.mode);
+    var spoons = c.unit === 'cup' || c.unit === 'tbsp' || c.unit === 'tsp' || !c.unit;
+    var text = spoons ? fractionString(c.amount) : decimalString(c.amount);
     var label = c.unit === 'cup' && c.amount > 1 ? 'cups' : LABEL[c.unit];
     return c.unit ? text + ' ' + label : text;
   }
@@ -161,15 +182,16 @@
       minus.addEventListener('click', function () { stepper(-1); });
       plus.addEventListener('click', function () { stepper(1); });
 
-      var usBtn = el('button', { type: 'button', text: 'US' });
-      var metBtn = el('button', { type: 'button', text: 'Metric' });
-      usBtn.addEventListener('click', function () { setSystem('us'); });
-      metBtn.addEventListener('click', function () { setSystem('metric'); });
-      function setSystem(s) { state.system = s; savePref('system', s); render(); }
+      var modeBtns = {};
+      [['cups', 'Cups & spoons'], ['metric', 'Grams & ml'], ['oz', 'Ounces']].forEach(function (m) {
+        var b = el('button', { type: 'button', text: m[1] });
+        b.addEventListener('click', function () { state.mode = m[0]; savePref('mode', m[0]); render(); });
+        modeBtns[m[0]] = b;
+      });
 
       var controls = el('div', { class: 'controls' }, [
         el('div', { class: 'stepper' }, [el('span', { text: 'Servings' }), minus, out, plus]),
-        el('div', { class: 'segmented' }, [usBtn, metBtn])
+        el('div', { class: 'segmented' }, Object.keys(modeBtns).map(function (k) { return modeBtns[k]; }))
       ]);
 
       var ingList = el('ul', { class: 'ingredients' });
@@ -178,13 +200,12 @@
       function render() {
         var scale = servings / r.base_servings;
         out.textContent = String(servings);
-        usBtn.setAttribute('aria-pressed', String(state.system === 'us'));
-        metBtn.setAttribute('aria-pressed', String(state.system === 'metric'));
+        Object.keys(modeBtns).forEach(function (k) { modeBtns[k].setAttribute('aria-pressed', String(state.mode === k)); });
 
         ingList.textContent = '';
         r.ingredients.forEach(function (i) {
           ingList.appendChild(el('li', {}, [
-            el('span', { class: 'amt', text: formatAmount(i.amount, i.unit, scale) }),
+            el('span', { class: 'amt', text: formatAmount(i, scale) }),
             document.createTextNode(' ' + i.name)
           ]));
         });
@@ -195,7 +216,7 @@
           s.text.split(/\{(\d{4})\}/).forEach(function (part, idx) {
             if (idx % 2 === 0) { if (part) p.appendChild(document.createTextNode(part)); return; }
             var ing = byId[part];
-            p.appendChild(ing ? el('span', { class: 'amt', text: formatAmount(ing.amount, ing.unit, scale) })
+            p.appendChild(ing ? el('span', { class: 'amt', text: formatAmount(ing, scale) })
                               : document.createTextNode('{' + part + '}'));
           });
           var li = el('li', {}, [el('h3', { text: s.title }), p]);
