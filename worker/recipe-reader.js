@@ -7,6 +7,9 @@
 })(typeof self !== 'undefined' ? self : typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  // Bump with `npm run bump` whenever the site changes: it keeps the page URLs, service worker cache and footer in step.
+  var VERSION = '2026.10.22-6';
+
   // ---------- units ----------
   // Every unit converts through a base of grams (weight) or millilitres (volume).
   var UNITS = {
@@ -135,8 +138,9 @@
     if (!s) return null;
     var sp = /^(?:a\s+)?(splash|drizzle)\s+of\s+(.+)$/i.exec(s);
     if (sp) {
-      var what = sp[2].trim(), word = sp[1].toLowerCase();
-      return { amount: 1, unit: 'tsp', name: what + ' (a ' + word + ')', estimated: 'a ' + word + ' of ' + what + ' = 1 tsp' };
+      // Unmeasured by nature: it belongs in the step that uses it, not in the ingredient list.
+      var what = tidyName(sp[2].trim());
+      return { amount: '', unit: '', name: what, unmeasured: 'a ' + sp[1].toLowerCase() + ' of ' + what };
     }
     var m = /^([\d\s/.¼-¾⅐-⅞-]+)(.*)$/.exec(s);
     var amount = NaN, rest = s, unit = '', rangeText = '';
@@ -282,39 +286,80 @@
   function pad4(n) { return ('000' + n).slice(-4); }
 
   function addIngredientLine(out, line, group) {
+    var added = 0;
     expandIngredientLine(line).forEach(function (q) {
+      if (q.unmeasured) { out.unmeasured.push({ text: q.unmeasured, name: q.name, group: group }); return; }
       q.id = pad4(out.ingredients.length + 1);
       if (!q.group && group) q.group = group;
       out.ingredients.push(q);
+      added++;
     });
+    return added;
   }
 
-  // Turns a pasted recipe (title, then "Ingredients" and "Instructions" sections) into
-  // form-ready data. Anything it cannot place is left for the person to fix by hand.
+  var ING_HEAD = /^#*\s*ingredients?\s*:?$/i;
+  var STEP_HEAD = /^#*\s*(?:instructions?|directions?|method|steps?|preparation|procedure|how to make(?: it)?)\s*:?$/i;
+  var NOTE_HEAD = /^#*\s*(?:notes?|tips?)\s*:?$/i;
+  var NUMBERED = /^(?:step\s*)?\d+\s*[.):]\s+\S/i;
+
+  // Turns pasted text into form-ready data, sorting each line into the title, an ingredient
+  // (under an optional section heading), a step or a note. Works with or without
+  // "Ingredients" / "Instructions" headings: bullets, "Dredge:" style headings, numbered lines
+  // and plain sentences are all recognised. Anything it cannot place is left for the person.
   function parseRecipeText(text) {
-    var out = { title: '', base_servings: '', ingredients: [], steps: [], notes: '' };
-    var section = '', group = '', noteLines = [];
-    var ingH = /^#*\s*ingredients?\s*:?$/i;
-    var stepH = /^#*\s*(instructions?|directions?|method|steps?|preparation|procedure)\s*:?$/i;
-    var noteH = /^#*\s*(notes?|tips?)\s*:?$/i;
+    var out = { title: '', base_servings: '', ingredients: [], unmeasured: [], steps: [], notes: '', headings: false };
+    var section = '', group = '', pending = '', sinceHeading = 0, stepTitle = '', noteLines = [];
+
+    function pushStep(t) {
+      t = t.replace(BULLET, '').replace(/^(?:step\s*)?\d+\s*[.):]\s*/i, '').trim();
+      if (!t) return;
+      out.steps.push({ title: stepTitle, text: t });
+      stepTitle = '';
+    }
+    function enterSteps() {
+      if (section !== 'step') {
+        section = 'step';
+        if (pending && sinceHeading === 0) stepTitle = pending; // "Marinate the chicken:" titled the method, not a group
+        pending = '';
+      }
+    }
+
     String(text).split(/\r?\n/).forEach(function (raw) {
-      var line = raw.trim(), m;
-      if (!line) return;
-      if (ingH.test(line)) { section = 'ing'; return; }
-      if (stepH.test(line)) { section = 'step'; return; }
-      if (noteH.test(line)) { section = 'note'; return; }
-      if (section !== 'step' && (m = /^(?:serves|servings|yield|makes)\s*:?\s*(\d+)/i.exec(line))) {
+      var line = raw.replace(/\s+/g, ' ').trim(), m;
+      if (!line || (line.length < 60 && NOISE.test(line))) return;
+      if (ING_HEAD.test(line)) { section = 'ing'; out.headings = true; return; }
+      if (STEP_HEAD.test(line)) { section = 'step'; out.headings = true; stepTitle = ''; pending = ''; return; }
+      if (NOTE_HEAD.test(line)) { section = 'note'; return; }
+      if (section !== 'step' && section !== 'note' && (m = /^(?:serves|servings|yield|makes)\s*:?\s*(\d+)/i.exec(line))) {
         if (!out.base_servings) out.base_servings = Number(m[1]);
         return;
       }
-      if (!section) { if (!out.title) out.title = line.replace(/^#+\s*/, ''); return; }
-      if (section === 'ing') {
-        if (/:$/.test(line) && !/\d/.test(line)) { group = cleanGroup(line); return; } // "For the sauce:"
-        addIngredientLine(out, line, group);
-      } else if (section === 'step') {
-        var t = line.replace(/^(?:step\s*)?\d+\s*[.):-]\s*/i, '');
-        if (t) out.steps.push({ title: '', text: t });
-      } else noteLines.push(line);
+      var bullet = BULLET.test(line), numbered = !bullet && NUMBERED.test(line);
+
+      if (!bullet && !numbered && isGroupHeading(line)) {
+        if (section === 'step') { stepTitle = cleanGroup(line); return; }
+        if (section === 'note') { noteLines.push(line); return; }
+        group = cleanGroup(line); pending = group; sinceHeading = 0; section = 'ing';
+        return;
+      }
+      if (section === 'note') { noteLines.push(line); return; }
+      if (numbered) { enterSteps(); pushStep(line); return; }
+      if (section === 'step') { pushStep(line); return; }
+
+      // before any method: title, then ingredients; a sentence means the method has begun
+      if (!out.title && section === '' && !bullet && !ING_START.test(line) && line.length <= 80 && !/[.!?:]$/.test(line)) {
+        out.title = line.replace(/^#+\s*/, ''); return;
+      }
+      var sentence = !bullet && /[.!?]$/.test(line) && line.length >= 20;
+      var bulletStep = bullet && (line.length > 100 || (/[.!?]$/.test(line) && line.length > 45));
+      if (sentence || bulletStep) {
+        if (out.ingredients.length || section === 'ing') { enterSteps(); pushStep(line); }
+        return; // otherwise it is intro chatter before the recipe starts
+      }
+      if (bullet || section === 'ing' || ING_START.test(line)) {
+        sinceHeading += addIngredientLine(out, line, group) || 1;
+        section = 'ing';
+      }
     });
     out.notes = noteLines.join('\n');
     return out;
@@ -393,14 +438,15 @@
 
   // Puts {id} in front of the first mention of each ingredient so amounts in the steps scale.
   function autoLinkSteps(ings, steps) {
-    var linked = {}, count = 0, lastWords = {};
-    ings.forEach(function (ing) { var w = nameKey(ing.name).split(' ').pop(); lastWords[w] = (lastWords[w] || 0) + 1; });
+    var linked = {}, count = 0, lastWords = {}, keyCount = {};
+    ings.forEach(function (ing) { var k = nameKey(ing.name), w = k.split(' ').pop(); lastWords[w] = (lastWords[w] || 0) + 1; keyCount[k] = (keyCount[k] || 0) + 1; });
     var out = steps.map(function (st) {
       var text = st.text;
       ings.forEach(function (ing) {
         if (linked[ing.id] || !(Number(ing.amount) > 0)) return;
         var key = nameKey(ing.name);
-        if (key.length < 3) return;
+        // the same or a similar ingredient elsewhere (two "butter"s, "salt" in two sections): ambiguous, leave it
+        if (key.length < 3 || keyCount[key] > 1 || lastWords[key.split(' ').pop()] > 1) return;
         var m = null, candidates = [key], last = key.split(' ').pop();
         if (last !== key && last.length >= 4 && lastWords[last] === 1) candidates.push(last);
         for (var c = 0; c < candidates.length && !m; c++) {
@@ -454,29 +500,6 @@
     return !BULLET.test(line) && line.length <= 60 && !/\d/.test(line) && (/:$/.test(line) || /^for (?:the )?\S/i.test(line));
   }
 
-  // No Ingredients/Instructions headings: decide line by line what looks like an ingredient,
-  // a section heading, or a step. Bulleted lists and "Dredge:" style headings are understood.
-  function guessRecipe(text) {
-    var out = { title: '', base_servings: '', ingredients: [], steps: [], notes: '', how: 'guess' }, group = '', inIngs = false;
-    String(text).split(/\r?\n/).forEach(function (raw) {
-      var line = raw.replace(/\s+/g, ' ').trim(), m;
-      if (!line || NOISE.test(line) && line.length < 60) return;
-      if ((m = /^(?:serves|servings|yield|makes)\s*:?\s*(\d+)/i.exec(line))) { if (!out.base_servings) out.base_servings = Number(m[1]); return; }
-      var bullet = BULLET.test(line);
-      var numbered = !bullet && /^(?:step\s*)?\d+\s*[.):-]\s+\S/i.test(line);
-      if (!bullet && !numbered && isGroupHeading(line)) { group = cleanGroup(line); inIngs = true; return; }
-      if (!out.title && !bullet && !numbered && !ING_START.test(line) && line.length <= 80 && !/[.!?:]$/.test(line)) { out.title = line; return; }
-      var asStep = numbered || (bullet && (line.length > 100 || (/[.!?]$/.test(line) && line.length > 45)));
-      var asIng = !asStep && (bullet || (inIngs && line.length < 90 && !/[.!?]$/.test(line)) || (ING_START.test(line) && line.length <= 110));
-      if (asIng) addIngredientLine(out, line, group);
-      else if (asStep || line.length >= 25) {
-        inIngs = false;
-        out.steps.push({ title: '', text: line.replace(/^[-*•]\s+/, '').replace(/^(?:step\s*)?\d+\s*[.):-]\s*/i, '') });
-      }
-    });
-    return out;
-  }
-
   function listNames(names, max) {
     var shown = names.slice(0, max).join(', ');
     return names.length > max ? shown + ' and ' + (names.length - max) + ' more' : shown;
@@ -494,17 +517,14 @@
     if (!p) {
       if (/<(div|p|li|span|h[1-6]|body|html)\b/i.test(text)) text = htmlToText(text);
       p = parseRecipeText(text);
-      p.how = 'headings';
-      if (!p.ingredients.length || !p.steps.length) {
-        var g = guessRecipe(text);
-        if (g.ingredients.length + g.steps.length > p.ingredients.length + p.steps.length) {
-          g.notes = g.notes || p.notes; p = g;
-          warnings.push('There were no "Ingredients" and "Instructions" headings, so I worked out which lines are ingredients and which are steps. Please check them.');
-        }
+      p.how = p.headings ? 'headings' : 'guess';
+      if (!p.headings && (p.ingredients.length || p.steps.length)) {
+        warnings.push('There were no "Ingredients" and "Instructions" headings, so I worked out which lines are ingredients and which are steps. Please check them.');
       }
       p.credit = ''; p.tags = []; p.sources = [];
       if (sourceUrl && /^https?:\/\//i.test(sourceUrl)) p.sources.push({ title: sourceUrl.replace(/^https?:\/\//i, '').split('/')[0], url: sourceUrl });
     }
+    p.unmeasured = p.unmeasured || [];
 
     var groups = [];
     p.ingredients.forEach(function (i) { if (i.group && groups.indexOf(i.group) < 0) groups.push(i.group); });
@@ -536,6 +556,16 @@
     if (p.ingredients.length && !p.steps.length) warnings.push('No steps found. Add the method below.');
     if (!p.title) warnings.push('No title found. Give it one above.');
     if (p.ingredients.length && !p.base_servings) warnings.push('It did not say how many it serves. Set the number above.');
+    // "a splash of hot sauce" stays out of the ingredient list; it belongs in the step that uses it
+    p.unmeasured.forEach(function (u) {
+      var re = new RegExp('\\b' + escapeRe(nameKey(u.name)) + 's?\\b', 'i'), at = -1;
+      p.steps.forEach(function (st, i) { if (at < 0 && re.test(st.text)) at = i; });
+      if (at >= 0) warnings.push('Left "' + u.text + '" out of the ingredient list because step ' + (at + 1) + ' mentions it.');
+      else {
+        p.notes = (p.notes ? p.notes + '\n' : '') + 'Also: ' + u.text + (u.group ? ' (' + u.group + ')' : '') + '.';
+        warnings.push('Left "' + u.text + '" out of the ingredient list. No step mentions it, so I put it in Notes. Add it to the right step.');
+      }
+    });
     p.warnings = warnings;
     return p;
   }
@@ -679,7 +709,7 @@
   }
 
   return {
-    UNITS: UNITS, LABEL: LABEL, FAMILY: FAMILY, fractionString: fractionString, decimalString: decimalString,
+    VERSION: VERSION, UNITS: UNITS, LABEL: LABEL, FAMILY: FAMILY, fractionString: fractionString, decimalString: decimalString,
     convert: convert, formatAmount: formatAmount, parseAmount: parseAmount, parseIngredientLine: parseIngredientLine,
     parseRecipeText: parseRecipeText, normalize: normalize, slugify: slugify, uniqueSlug: uniqueSlug,
     combineIngredients: combineIngredients, encodeShare: encodeShare, decodeShare: decodeShare, nameKey: nameKey,
