@@ -54,6 +54,9 @@ Rules (same as the skill):
 - `timer_seconds` adds a start/cancel timer button to waiting, baking or resting steps.
 - Web recipes are paraphrased and get a `sources` list. Family recipes keep their
   own wording and have no `sources`.
+- `group` (optional, on an ingredient) is a section name such as "Marinade" or "Hot honey glaze". The recipe shows a
+  heading whenever the section changes. Keep ingredients of one section next to each other.
+- `steps` may be an empty list; the recipe then says "No steps yet".
 - `tags` (optional) are short lowercase labels used for filtering (up to 8).
 - `image` (optional) is a path to a picture committed in this repo, for example
   `"image": "recipes/images/grandmas-soup.jpg"`. Recipes added in the app embed a small `photo` instead.

@@ -16,6 +16,9 @@ A small recipe site that runs entirely in the browser (no server, no build step)
   ingredients and steps (even with no headings), ignores page clutter, reads the structured recipe data
   most sites embed, picks up weights from brackets like "1 cup (125 g) flour", links amounts inside the
   steps so they scale, and turns "bake 25 minutes" into timers. You check it before saving.
+- **Ingredient sections.** Recipes with parts (marinade, dredge, glaze, sauce) keep them as headings. Pasted
+  lines like `1 tsp: salt, pepper, paprika` split into separate ingredients, `1/2 stick butter` becomes
+  4 tbsp, `Optional:` and `to taste` are marked, and loose wording like "splash" gets a flagged estimate.
 - **Paste a link** (optional one-time setup of a free helper, see [docs/LINK_IMPORT.md](docs/LINK_IMPORT.md)).
 - **Favorites, star ratings, "I cooked this" counts and personal notes**, plus search, tag filters,
   sorting and a "Surprise me" button.

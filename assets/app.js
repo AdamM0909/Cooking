@@ -199,6 +199,18 @@
     return out;
   }
 
+  // Lists ingredients with a heading whenever the section changes (marinade, glaze, ...).
+  function eachIngredient(ings, addItem, addHeading) {
+    var last = '';
+    ings.forEach(function (i) {
+      var g = i.group || '';
+      if (g !== last && (g || last)) addHeading(g || 'Other');
+      last = g;
+      addItem(i);
+    });
+  }
+  function headingItem(text) { return el('li', { class: 'group-h', text: text }); }
+
   function eggHint(ing, scale) {
     var a = ing.amount * scale;
     if (ing.unit || !/\begg/i.test(ing.name) || Math.abs(a - Math.round(a)) < 0.05) return null;
@@ -353,7 +365,9 @@
 
       function shoppingText() {
         var scale = servings / r.base_servings;
-        return r.title + ' (serves ' + servings + ')\n' + r.ingredients.map(function (i) { return '- ' + fmt(i, scale) + ' ' + i.name; }).join('\n');
+        var lines = [];
+        eachIngredient(r.ingredients, function (i) { lines.push('- ' + fmt(i, scale) + ' ' + i.name); }, function (g) { lines.push(g + ':'); });
+        return r.title + ' (serves ' + servings + ')\n' + lines.join('\n');
       }
 
       // header: photo, favourite, rating
@@ -374,6 +388,7 @@
 
       // main actions
       var cookBtn = el('button', { type: 'button', class: 'primary', text: 'Start cooking', onclick: function () { location.hash = '#/cook/' + kind + '/' + slug + '?s=' + servings; } });
+      if (!r.steps.length) { cookBtn.disabled = true; cookBtn.title = 'Add steps to use cook mode'; }
       var listBtn = el('button', { type: 'button', text: 'Add to shopping list', onclick: function () {
         var l = loadList(), ex = l.items.filter(function (x) { return x.ref === ref; })[0];
         if (ex) ex.servings = servings; else l.items.push({ ref: ref, servings: servings });
@@ -434,13 +449,13 @@
         var scale = servings / r.base_servings;
         out.textContent = String(servings);
         clear(ingList);
-        r.ingredients.forEach(function (i) {
+        eachIngredient(r.ingredients, function (i) {
           var cb = el('input', { type: 'checkbox', checked: checked[i.id], onchange: function () { checked[i.id] = cb.checked; li.classList.toggle('got', cb.checked); } });
           var li = el('li', { class: checked[i.id] ? 'got' : '' }, [
             el('label', {}, [cb, amountSpan(i, scale), document.createTextNode(' ' + i.name), eggHint(i, scale)])
           ]);
           ingList.appendChild(li);
-        });
+        }, function (g) { ingList.appendChild(headingItem(g)); });
         clear(stepList);
         r.steps.forEach(function (s) {
           var li = el('li', {}, [el('h3', { text: s.title }), stepParagraph(s, byId, scale)]);
@@ -469,7 +484,8 @@
       app.appendChild(el('h2', { text: 'Ingredients' }));
       app.appendChild(ingList);
       app.appendChild(el('h2', { text: 'Steps' }));
-      app.appendChild(stepList);
+      if (r.steps.length) app.appendChild(stepList);
+      else app.appendChild(el('p', { class: 'muted' }, [document.createTextNode('No steps yet. '), kind === 'u' ? el('a', { href: '#/edit/' + slug, text: 'Add the method' }) : null]));
       if (r.notes) {
         app.appendChild(el('h2', { text: 'Notes' }));
         app.appendChild(el('p', { class: 'pre-wrap', text: r.notes }));
@@ -496,6 +512,7 @@
       var servings = s >= 1 ? s : r.base_servings, scale = servings / r.base_servings;
       var byId = {}; r.ingredients.forEach(function (i) { byId[i.id] = i; });
       var idx = 0, total = r.steps.length;
+      if (!total) { clear(app); app.appendChild(el('p', { text: 'This recipe has no steps yet.' })); app.appendChild(el('p', {}, [el('a', { href: '#/' + kind + '/' + slug, text: 'Back to the recipe' })])); return; }
       keepAwake(true);
 
       var stage = el('div', { class: 'cook-stage' });
@@ -552,7 +569,8 @@
       ]);
       function redrawAll() {
         var ul = ingDetails.querySelector('ul'); clear(ul);
-        r.ingredients.forEach(function (i) { ul.appendChild(el('li', {}, [amountSpan(i, scale), document.createTextNode(' ' + i.name)])); });
+        eachIngredient(r.ingredients, function (i) { ul.appendChild(el('li', {}, [amountSpan(i, scale), document.createTextNode(' ' + i.name)])); },
+          function (g) { ul.appendChild(headingItem(g)); });
       }
 
       clear(app);
@@ -730,9 +748,21 @@
       var name = el('input', { type: 'text', class: 'name', 'aria-label': 'Ingredient', placeholder: 'all-purpose flour', value: ing ? ing.name : '' });
       var gpc = el('input', { type: 'text', inputmode: 'decimal', class: 'gpc', 'aria-label': 'Grams per cup (optional)', title: 'Grams in one US cup of this ingredient (optional, lets you switch cups to grams)', placeholder: 'g/cup', value: ing && ing.grams_per_cup ? String(ing.grams_per_cup) : '' });
       var rm = el('button', { type: 'button', 'aria-label': 'Remove ingredient', text: '×', onclick: function () { row.remove(); } });
-      [amount, unit, name, gpc, rm].forEach(function (c) { row.appendChild(c); });
+      var grp = el('input', { type: 'text', class: 'grp', 'aria-label': 'Section (optional)', list: 'f-sections', placeholder: 'Section, e.g. Marinade (optional)', value: ing && ing.group ? ing.group : '' });
+      grp.addEventListener('focus', refreshSections);
+      [amount, unit, name, gpc, rm, grp].forEach(function (c) { row.appendChild(c); });
       ingBox.appendChild(row);
       return row;
+    }
+
+    var sections = el('datalist', { id: 'f-sections' });
+    function refreshSections() {
+      clear(sections);
+      var seen = {};
+      Array.prototype.forEach.call(ingBox.querySelectorAll('.grp'), function (g) {
+        var v = g.value.trim();
+        if (v && !seen[v]) { seen[v] = true; sections.appendChild(el('option', { value: v })); }
+      });
     }
 
     function ingredientOptions() {
@@ -861,7 +891,7 @@
       var ingredients = Array.prototype.map.call(ingBox.querySelectorAll('.row'), function (row) {
         var gp = row.querySelector('.gpc').value.trim();
         return { id: row.getAttribute('data-id'), name: row.querySelector('.name').value, amount: L.parseAmount(row.querySelector('.amount').value),
-                 unit: row.querySelector('select').value, grams_per_cup: gp ? L.parseAmount(gp) : undefined };
+                 unit: row.querySelector('select').value, grams_per_cup: gp ? L.parseAmount(gp) : undefined, group: row.querySelector('.grp').value };
       }).filter(function (i) { return i.name.trim() || isFinite(i.amount); });
       var steps = Array.prototype.map.call(stepBox.querySelectorAll('.row'), function (row) {
         var mins = parseFloat(row.querySelector('.smins').value);
@@ -900,7 +930,7 @@
       el('label', { for: 'f-photo', text: 'Photo (optional)' }), fileInput, preview,
       el('h2', { text: 'Ingredients' }),
       el('p', { class: 'muted small', text: 'Amounts can be written like 1 1/2, 3/4 or 0.5. Grams per cup is optional: fill it in for dry ingredients to switch exactly between cups, grams and ounces (flour is about 125, sugar 200, butter 227).' }),
-      ingBox,
+      ingBox, sections,
       el('button', { type: 'button', text: '+ Add ingredient', onclick: function () { addIngRow().querySelector('.amount').focus(); } }),
       el('details', {}, [el('summary', { text: 'Paste a list of ingredients' }), paste, pasteBtn]),
       el('h2', { text: 'Steps' }),
@@ -939,9 +969,10 @@
     app.appendChild(msg);
     app.appendChild(el('p', { class: 'muted', text: 'Serves ' + r.base_servings + (r.credit ? ' · ' + r.credit : '') }));
     app.appendChild(el('h2', { text: 'Ingredients' }));
-    app.appendChild(el('ul', { class: 'ingredients' }, r.ingredients.map(function (i) {
-      return el('li', {}, [amountSpan(i, 1), document.createTextNode(' ' + i.name)]);
-    })));
+    var previewList = el('ul', { class: 'ingredients' });
+    eachIngredient(r.ingredients, function (i) { previewList.appendChild(el('li', {}, [amountSpan(i, 1), document.createTextNode(' ' + i.name)])); },
+      function (g) { previewList.appendChild(headingItem(g)); });
+    app.appendChild(previewList);
     app.appendChild(el('h2', { text: 'Steps' }));
     app.appendChild(el('ol', { class: 'steps' }, r.steps.map(function (s) {
       return el('li', {}, [el('h3', { text: s.title }), stepParagraph(s, byId, 1)]);

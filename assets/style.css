@@ -202,3 +202,6 @@ button:disabled { opacity: .4; cursor: default; }
 .quick ul { margin: 6px 0 0; padding-left: 1.2em; }
 .reader-setup { margin-top: 12px; }
 .reader-setup input { margin: 4px 0 8px; }
+.group-h { font-weight: 700; color: var(--muted); margin-top: 14px; border-bottom: 0 !important; text-transform: none; }
+.group-h:first-child { margin-top: 0; }
+.row.ing .grp { grid-column: 1 / -1; font-size: .9rem; }
