@@ -2,15 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Our Kitchen</title>
+  <meta name="description" content="Our family recipes: scale servings, switch between cups, grams and ounces, and cook step by step.">
+  <meta name="theme-color" content="#c2410c">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
   <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
+  <a class="skip" href="#app">Skip to content</a>
   <header class="site-header">
     <a class="brand" href="#/">Our Kitchen</a>
+    <nav aria-label="Main">
+      <a href="#/" data-nav="home">Recipes</a>
+      <a href="#/list" data-nav="list">Shopping list <span id="list-count" class="count" hidden></span></a>
+      <a href="#/new" data-nav="new">+ Add</a>
+    </nav>
   </header>
   <main id="app" aria-live="polite">Loading...</main>
+  <div id="timers" class="timers" role="status" hidden></div>
+  <noscript><p class="noscript">Our Kitchen needs JavaScript turned on to show recipes.</p></noscript>
+  <script src="assets/lib.js"></script>
   <script src="assets/app.js"></script>
 </body>
 </html>

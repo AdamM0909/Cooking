@@ -15,7 +15,7 @@ Every recipe is one JSON file in `recipes/`, plus its slug in `recipes/index.jso
 The format comes from the Recipe Card skill, so you can hand Claude a recipe
 (pasted text, a link, a dish name, or your own family version) and ask it to
 "add this to the site using the recipe-card skill". Claude should write the file,
-add the slug to `index.json`, and run `node tools/validate.mjs`.
+add the slug to `index.json`, and run `npm run validate`.
 
 ## File format
 
@@ -24,6 +24,7 @@ add the slug to `index.json`, and run `node tools/validate.mjs`.
   "title": "Grandma's Soup",
   "credit": "Optional family credit or note",
   "base_servings": 4,
+  "tags": ["dinner", "soup"],
   "ingredients": [
     { "id": "0001", "name": "carrots, diced", "amount": 2.5, "unit": "cup" },
     { "id": "0002", "name": "large egg", "amount": 1 }
@@ -53,6 +54,9 @@ Rules (same as the skill):
 - `timer_seconds` adds a start/cancel timer button to waiting, baking or resting steps.
 - Web recipes are paraphrased and get a `sources` list. Family recipes keep their
   own wording and have no `sources`.
+- `tags` (optional) are short lowercase labels used for filtering (up to 8).
+- `image` (optional) is a path to a picture committed in this repo, for example
+  `"image": "recipes/images/grandmas-soup.jpg"`. Recipes added in the app embed a small `photo` instead.
 - `"example": true` marks a placeholder recipe. Remove it for real ones.
 
 ## Known limits

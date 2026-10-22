@@ -1,44 +1,39 @@
-// Checks every recipe in recipes/ against the format in RECIPES.md.
+// Checks every recipe in recipes/ using the same rules the app uses (assets/lib.js).
 // Usage: node tools/validate.mjs
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes');
-const UNITS = ['g', 'kg', 'ml', 'l', 'tsp', 'tbsp', 'cup', 'fl_oz', 'oz', 'lb', 'pinch'];
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const dir = join(root, 'recipes');
+const { normalize } = createRequire(import.meta.url)(join(root, 'assets', 'lib.js'));
+
 const slugs = JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8'));
 let errors = 0;
 const fail = (slug, msg) => { errors++; console.error(`${slug}: ${msg}`); };
 
+const onDisk = readdirSync(dir).filter(f => f.endsWith('.json') && f !== 'index.json').map(f => f.slice(0, -5));
+for (const f of onDisk) if (!slugs.includes(f)) fail(f, 'file exists but is not listed in recipes/index.json');
+if (new Set(slugs).size !== slugs.length) fail('index.json', 'contains duplicate slugs');
+
 for (const slug of slugs) {
+  if (!/^[\w-]+$/.test(slug)) { fail(slug, 'slug may only use letters, numbers, - and _'); continue; }
   let r;
   try { r = JSON.parse(readFileSync(join(dir, `${slug}.json`), 'utf8')); }
   catch (e) { fail(slug, `cannot read or parse (${e.message})`); continue; }
 
-  if (!r.title) fail(slug, 'missing title');
-  if (!Number.isFinite(r.base_servings) || r.base_servings < 1) fail(slug, 'base_servings must be a number >= 1');
-  const ids = new Set();
-  for (const i of r.ingredients ?? []) {
-    if (!/^\d{4}$/.test(i.id)) fail(slug, `bad ingredient id "${i.id}"`);
-    if (ids.has(i.id)) fail(slug, `duplicate ingredient id ${i.id}`);
-    ids.add(i.id);
-    if (!i.name) fail(slug, `ingredient ${i.id} has no name`);
-    if (typeof i.amount !== 'number' || !(i.amount > 0)) fail(slug, `ingredient ${i.id} amount must be a positive number`);
-    if (i.grams_per_cup !== undefined && !(i.grams_per_cup > 0)) fail(slug, `ingredient ${i.id} grams_per_cup must be a positive number`);
-    if (i.unit !== undefined && !UNITS.includes(i.unit)) fail(slug, `ingredient ${i.id} has unknown unit "${i.unit}"`);
-  }
-  if (!ids.size) fail(slug, 'no ingredients');
-  const used = new Set();
-  for (const [n, s] of (r.steps ?? []).entries()) {
-    if (!s.title || !s.text) fail(slug, `step ${n + 1} needs title and text`);
-    for (const m of (s.text ?? '').matchAll(/\{(\d{4})\}/g)) {
-      used.add(m[1]);
-      if (!ids.has(m[1])) fail(slug, `step ${n + 1} references unknown ingredient {${m[1]}}`);
+  const res = normalize(r);
+  if (!res.recipe) { fail(slug, res.error); continue; }
+  if (r.image && !existsSync(join(root, r.image)) && !existsSync(join(dir, r.image))) fail(slug, `image "${r.image}" not found`);
+
+  const used = new Set(r.steps.flatMap(s => [...s.text.matchAll(/\{(\d{4})\}/g)].map(m => m[1])));
+  for (const i of res.recipe.ingredients) {
+    if (!used.has(i.id)) console.warn(`${slug}: ingredient ${i.id} (${i.name}) is never referenced in a step (fine, but check)`);
+    if (i.unit && ['cup', 'tbsp', 'tsp'].includes(i.unit) && !i.grams_per_cup && !/oil|milk|water|juice|vinegar|stock|broth|cream|wine|extract|sauce|syrup|honey/i.test(i.name)) {
+      console.warn(`${slug}: ${i.name} has no grams_per_cup, so it cannot switch to grams (ignore for liquids)`);
     }
-    if (s.timer_seconds !== undefined && !(s.timer_seconds > 0)) fail(slug, `step ${n + 1} timer_seconds must be > 0`);
   }
-  if (!(r.steps ?? []).length) fail(slug, 'no steps');
-  for (const id of ids) if (!used.has(id)) console.warn(`${slug}: ingredient ${id} is never referenced in a step (fine, but check)`);
 }
 console.log(errors ? `${errors} problem(s) found` : `${slugs.length} recipe(s) OK`);
 process.exit(errors ? 1 : 0);
