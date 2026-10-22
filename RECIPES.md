@@ -1,5 +1,16 @@
 # Adding recipes
 
+There are two ways recipes get onto the site.
+
+**In the app (just for you, on this device).** Open the site and tap **+ Add recipe**.
+Type the fields, or open "Paste a list of ingredients" and paste lines like
+`1 1/2 cups flour`. They are stored in your browser, so they will not appear on other
+devices and are lost if you clear site data. Use **Backup & restore** to download a
+backup, restore it, or move recipes to another device. To make one show for everyone,
+open it, choose **Download JSON**, and add the file to `recipes/` as described below.
+
+**In the repository (for everyone).** The rest of this page.
+
 Every recipe is one JSON file in `recipes/`, plus its slug in `recipes/index.json`.
 The format comes from the Recipe Card skill, so you can hand Claude a recipe
 (pasted text, a link, a dish name, or your own family version) and ask it to
