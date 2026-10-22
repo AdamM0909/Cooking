@@ -6,7 +6,8 @@
     "test": "node --test",
     "validate": "node tools/validate.mjs",
     "check": "node --test && node tools/validate.mjs",
-    "serve": "python3 -m http.server 8000"
+    "serve": "python3 -m http.server 8000",
+    "build:worker": "node tools/build-worker.mjs"
   },
   "license": "UNLICENSED"
 }

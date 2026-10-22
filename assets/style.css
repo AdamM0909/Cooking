@@ -197,3 +197,8 @@ button:disabled { opacity: .4; cursor: default; }
   .hero { max-height: 200px; }
 }
 .ingredients input[type="checkbox"] { width: 1.15em; height: 1.15em; margin: 0 .6em 0 0; vertical-align: -.15em; accent-color: var(--accent); }
+.quick[open] summary { margin-bottom: 8px; }
+.quick .primary { margin-top: 6px; }
+.quick ul { margin: 6px 0 0; padding-left: 1.2em; }
+.reader-setup { margin-top: 12px; }
+.reader-setup input { margin: 4px 0 8px; }

@@ -3,7 +3,7 @@
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.KitchenLib = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+})(typeof self !== 'undefined' ? self : typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
   // ---------- units ----------
@@ -122,18 +122,28 @@
   };
 
   // "1 1/2 cups flour, sifted" -> { amount: 1.5, unit: 'cup', name: 'flour, sifted' }
+  // "1 cup (125 g) flour" also gives grams_per_cup: 125 so the weight is remembered.
   function parseIngredientLine(line) {
-    var s = String(line).replace(/^[\s\-*•]+/, '').trim();
+    var s = String(line).replace(/^[\s\-*\u2022]+/, '').trim();
     if (!s) return null;
-    var m = /^([\d\s/.¼-¾⅐-⅞-]+)(.*)$/.exec(s);
-    var amount = NaN, rest = s;
+    var m = /^([\d\s/.\u00BC-\u00BE\u2150-\u215E-]+)(.*)$/.exec(s);
+    var amount = NaN, rest = s, unit = '';
     if (m) {
       amount = parseAmount(m[1]);
       if (isFinite(amount)) rest = m[2].trim(); else rest = s;
     }
-    var unit = '';
+    if (!isFinite(amount)) {
+      // "a pinch of salt", "an egg", "a cup of milk", "half a lemon"
+      var wordy = /^(a|an|one|half(?: a| an)?)\s+(.+)$/i.exec(s);
+      if (wordy && !/^(little|few|bit|couple|splash|handful|drizzle|sprinkle|knob|squeeze|glug|touch|lot|dollop|sprig)\b/i.test(wordy[2])) {
+        amount = /^half/i.test(wordy[1]) ? 0.5 : 1; rest = wordy[2];
+        var pd = /^(pinch|dash)\s+of\s+/i.exec(rest);
+        if (pd) { unit = 'pinch'; rest = rest.slice(pd[0].length); }
+      }
+    }
     var fl = /^fl\.?\s*oz\.?\s+/i.exec(rest);
-    if (fl) { unit = 'fl_oz'; rest = rest.slice(fl[0].length); }
+    if (unit) { /* already found ("a pinch of") */ }
+    else if (fl) { unit = 'fl_oz'; rest = rest.slice(fl[0].length); }
     else {
       var w = /^([a-zA-Z]+)\.?(?:\s+|$)/.exec(rest);
       if (w && UNIT_WORDS[w[1].toLowerCase()] && isFinite(amount)) {
@@ -142,7 +152,34 @@
       }
     }
     rest = rest.replace(/^of\s+/i, '').trim();
-    return { amount: isFinite(amount) ? amount : '', unit: unit, name: rest };
+    var gpc;
+    rest = rest.replace(/\(\s*([\d.]+)\s*(g|grams?|oz|ounces?)\.?\s*\)/i, function (all, n, u) {
+      var spoon = unit === 'cup' || unit === 'tbsp' || unit === 'tsp';
+      if (spoon && isFinite(amount)) {
+        var grams = parseFloat(n) * (/^o/i.test(u) ? UNITS.oz.f : 1), ml = amount * UNITS[unit].f;
+        var d = Math.round(grams / ml * UNITS.cup.f);
+        if (d >= 20 && d <= 400) gpc = d;
+      }
+      return '';
+    });
+    rest = rest.replace(/\(\s*[\d./\s\u00BC-\u00BE\u2150-\u215E-]+\s*(?:ml|l|g|kg|oz|lb|lbs|cups?|tbsp|tsp|fl\.?\s*oz)\.?\s*\)/gi, '');
+    rest = rest.replace(/\s{2,}/g, ' ').replace(/\s+,/g, ',').trim();
+    var out = { amount: isFinite(amount) ? amount : '', unit: unit, name: rest };
+    if (gpc) out.grams_per_cup = gpc;
+    return out;
+  }
+
+  // 0.3333 -> "1/3", 1.5 -> "1 1/2", 2 -> "2": friendlier to read and edit than raw decimals.
+  function amountToInput(x) {
+    x = Number(x);
+    if (!(x > 0)) return '';
+    var whole = Math.floor(x + 1e-9), rest = x - whole, dens = [2, 3, 4, 8];
+    if (rest < 0.005) return String(whole);
+    for (var i = 0; i < dens.length; i++) {
+      var d = dens[i], n = Math.round(rest * d);
+      if (n > 0 && n < d && Math.abs(rest - n / d) < 0.005) return (whole ? whole + ' ' : '') + n + '/' + d;
+    }
+    return String(Math.round(x * 1000) / 1000);
   }
 
   function pad4(n) { return ('000' + n).slice(-4); }
@@ -177,6 +214,190 @@
     });
     out.notes = noteLines.join('\n');
     return out;
+  }
+
+  // ---------- making sense of pasted text, pages and structured data ----------
+  var ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', frac12: '½', frac14: '¼', frac34: '¾',
+                   deg: '°', ndash: '-', mdash: '-', rsquo: "'", lsquo: "'", ldquo: '"', rdquo: '"', hellip: '...' };
+  function decodeEntities(str) {
+    return String(str).replace(/&(#x[0-9a-f]+|#\d+|[a-z0-9]+);/gi, function (all, e) {
+      if (e.charAt(0) === '#') {
+        var code = e.charAt(1).toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : all;
+      }
+      return Object.prototype.hasOwnProperty.call(ENTITIES, e.toLowerCase()) ? ENTITIES[e.toLowerCase()] : all;
+    });
+  }
+
+  function htmlToText(html) {
+    return decodeEntities(String(html)
+      .replace(/<(script|style|noscript|svg|nav|header|footer|form|iframe)\b[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|tr|ul|ol|section|article)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' '))
+      .replace(/[ \t ]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function isRecipeNode(x) {
+    var t = x && x['@type'];
+    return !!t && (t === 'Recipe' || (Array.isArray(t) && t.indexOf('Recipe') >= 0));
+  }
+  function findRecipeNode(x, depth) {
+    if (!x || typeof x !== 'object' || (depth || 0) > 6) return null;
+    if (Array.isArray(x)) { for (var i = 0; i < x.length; i++) { var f = findRecipeNode(x[i], (depth || 0) + 1); if (f) return f; } return null; }
+    if (isRecipeNode(x)) return x;
+    return findRecipeNode(x['@graph'], (depth || 0) + 1) || findRecipeNode(x.mainEntity, (depth || 0) + 1);
+  }
+  // Most recipe sites embed schema.org Recipe data in a JSON-LD script tag.
+  function extractJsonLdRecipe(html) {
+    var re = /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi, m;
+    while ((m = re.exec(String(html)))) {
+      try { var f = findRecipeNode(JSON.parse(m[1].trim()), 0); if (f) return f; } catch (e) { /* not valid JSON, try the next block */ }
+    }
+    return null;
+  }
+
+  function firstText(v) {
+    if (v == null) return '';
+    if (typeof v === 'string' || typeof v === 'number') return String(v);
+    if (Array.isArray(v)) return firstText(v[0]);
+    return firstText(v.text || v.name || '');
+  }
+  function flattenInstructions(v, out) {
+    if (!v) return out;
+    if (typeof v === 'string') {
+      var parts = decodeEntities(v.replace(/<br\s*\/?>|<\/p>|<\/li>/gi, '\n').replace(/<[^>]+>/g, ' ')).split(/\r?\n+/);
+      if (parts.length === 1 && parts[0].length > 200) parts = parts[0].split(/(?<=[.!?])\s+(?=[A-Z])/);
+      parts.forEach(function (t) { t = t.replace(/\s+/g, ' ').trim(); if (t) out.push({ title: '', text: t }); });
+    } else if (Array.isArray(v)) v.forEach(function (x) { flattenInstructions(x, out); });
+    else if (typeof v === 'object') {
+      if (v.itemListElement) flattenInstructions(v.itemListElement, out);
+      else flattenInstructions(v.text || v.name, out);
+    }
+    return out;
+  }
+
+  // "bake 25 to 30 minutes" -> 1500 (the lower figure); undefined when no sensible time is found.
+  function detectTimer(text) {
+    var m = /(\d+(?:\.\d+)?)(?:\s*(?:-|–|to)\s*\d+(?:\.\d+)?)?\s*(hours?|hrs?|minutes?|mins?)\b/i.exec(text);
+    if (!m) return undefined;
+    var secs = Math.round(parseFloat(m[1]) * (/^h/i.test(m[2]) ? 3600 : 60));
+    return secs >= 60 && secs <= 86400 ? secs : undefined;
+  }
+
+  function escapeRe(t) { return String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  // Puts {id} in front of the first mention of each ingredient so amounts in the steps scale.
+  function autoLinkSteps(ings, steps) {
+    var linked = {}, count = 0, lastWords = {};
+    ings.forEach(function (ing) { var w = nameKey(ing.name).split(' ').pop(); lastWords[w] = (lastWords[w] || 0) + 1; });
+    var out = steps.map(function (st) {
+      var text = st.text;
+      ings.forEach(function (ing) {
+        if (linked[ing.id] || !(Number(ing.amount) > 0)) return;
+        var key = nameKey(ing.name);
+        if (key.length < 3) return;
+        var m = null, candidates = [key], last = key.split(' ').pop();
+        if (last !== key && last.length >= 4 && lastWords[last] === 1) candidates.push(last);
+        for (var c = 0; c < candidates.length && !m; c++) {
+          m = new RegExp('\\b(?:(?:all the|all of the|the|your)\\s+)?' + escapeRe(candidates[c]) + 's?\\b', 'i').exec(text);
+        }
+        if (!m || m.index === 0) return;
+        var before = text.slice(0, m.index);
+        if (/\b(remaining|rest of|more|extra|additional|reserved|another|other|leftover)\s+(the\s+)?$/i.test(before)) return;
+        text = before + '{' + ing.id + '} ' + m[0].replace(/^(?:all the|all of the|the|your)\s+/i, '') + text.slice(m.index + m[0].length);
+        linked[ing.id] = true; count++;
+      });
+      return { title: st.title, text: text };
+    });
+    return { steps: out, linked: count };
+  }
+
+  function looksLikeUrl(text) { return /^https?:\/\/[^\s]+$/i.test(String(text).trim()); }
+
+  function recipeFromJsonLd(node, sourceUrl) {
+    var p = { title: decodeEntities(firstText(node.name)).trim(), base_servings: '', ingredients: [], steps: [], notes: '', credit: '', tags: [], sources: [] };
+    var y = /\d+/.exec(firstText(node.recipeYield));
+    if (y) p.base_servings = Number(y[0]);
+    (Array.isArray(node.recipeIngredient) ? node.recipeIngredient : []).forEach(function (line, i) {
+      var q = parseIngredientLine(decodeEntities(String(line)));
+      if (q && q.name) { q.id = pad4(i + 1); p.ingredients.push(q); }
+    });
+    p.ingredients.forEach(function (q, i) { q.id = pad4(i + 1); });
+    p.steps = flattenInstructions(node.recipeInstructions, []);
+    p.notes = decodeEntities(firstText(node.description)).replace(/\s+/g, ' ').trim().slice(0, 600);
+    var author = node.author && (Array.isArray(node.author) ? node.author[0] : node.author);
+    var an = decodeEntities(firstText(author && typeof author === 'object' ? author.name : author)).trim();
+    if (an) p.credit = 'From ' + an;
+    var kw = []
+      .concat(typeof node.keywords === 'string' ? node.keywords.split(',') : (Array.isArray(node.keywords) ? node.keywords : []))
+      .concat(Array.isArray(node.recipeCategory) ? node.recipeCategory : (node.recipeCategory ? [node.recipeCategory] : []));
+    kw.forEach(function (k) { k = decodeEntities(String(k)).trim().toLowerCase(); if (k && k.length <= 20 && p.tags.indexOf(k) < 0 && p.tags.length < 4) p.tags.push(k); });
+    if (sourceUrl && /^https?:\/\//i.test(sourceUrl)) {
+      var host = sourceUrl.replace(/^https?:\/\//i, '').split('/')[0];
+      p.sources.push({ title: host, url: sourceUrl });
+    }
+    p.how = 'structured';
+    return p;
+  }
+
+  var NOISE = /^(print( recipe)?|pin( it| recipe)?|share|save( recipe)?|jump to( recipe)?|skip to|rate( this)?|review|reviews?|comments?|leave a (comment|review)|advertisement|ads?|subscribe|sign up|nutrition( facts| information)?|calories|prep(aration)? time|cook time|total time|course|cuisine|author|print|email|facebook|twitter|instagram|tweet|home|menu|search|recipes?|like|reply|\d+(\.\d+)? ?(stars?|ratings?|votes?|reviews?)|\(\d+\))\b.*$/i;
+  var ING_START = /^(?:[-*•]\s*)?(?:\d|[¼-¾⅐-⅞]|(?:a|an|one|two|three|half|pinch|dash|handful|splash)\s)/i;
+
+  // No headings at all: decide line by line what looks like an ingredient and what a step.
+  function guessRecipe(text) {
+    var out = { title: '', base_servings: '', ingredients: [], steps: [], notes: '', how: 'guess' }, n = 1;
+    text.split(/\r?\n/).forEach(function (raw) {
+      var line = raw.replace(/\s+/g, ' ').trim(), m;
+      if (!line || NOISE.test(line) && line.length < 60) return;
+      if ((m = /^(?:serves|servings|yield|makes)\s*:?\s*(\d+)/i.exec(line))) { if (!out.base_servings) out.base_servings = Number(m[1]); return; }
+      var numbered = /^(?:step\s*)?\d+\s*[.):-]\s+\S/i.test(line);
+      if (!out.title && !numbered && line.length <= 80 && !ING_START.test(line) && !/[.!?]$/.test(line)) { out.title = line; return; }
+      if (!numbered && ING_START.test(line) && line.length <= 110) {
+        var q = parseIngredientLine(line);
+        if (q && q.name) { q.id = pad4(n++); out.ingredients.push(q); }
+      } else if (numbered || line.length >= 25) {
+        out.steps.push({ title: '', text: line.replace(/^(?:step\s*)?\d+\s*[.):-]\s*/i, '') });
+      }
+    });
+    return out;
+  }
+
+  // Takes whatever was pasted (page source, JSON-LD, a copied page, a recipe typed out) and
+  // returns form-ready data plus plain-language notes about what was guessed.
+  function smartParse(input, sourceUrl) {
+    var text = String(input == null ? '' : input).trim(), p = null, warnings = [];
+    if (/ld\+json|"Recipe"/i.test(text)) {
+      var node = extractJsonLdRecipe(text);
+      if (!node) { try { node = findRecipeNode(JSON.parse(text), 0); } catch (e) { node = null; } }
+      if (node) p = recipeFromJsonLd(node, sourceUrl);
+    }
+    if (!p) {
+      if (/<(div|p|li|span|h[1-6]|body|html)\b/i.test(text)) text = htmlToText(text);
+      p = parseRecipeText(text);
+      p.how = 'headings';
+      if (!p.ingredients.length || !p.steps.length) {
+        var g = guessRecipe(text);
+        if (g.ingredients.length + g.steps.length > p.ingredients.length + p.steps.length) {
+          g.notes = g.notes || p.notes; p = g;
+          warnings.push('I could not find "Ingredients" and "Instructions" headings, so I guessed which lines are ingredients and which are steps. Please check them.');
+        }
+      }
+      p.credit = ''; p.tags = []; p.sources = [];
+      if (sourceUrl && /^https?:\/\//i.test(sourceUrl)) p.sources.push({ title: sourceUrl.replace(/^https?:\/\//i, '').split('/')[0], url: sourceUrl });
+    }
+    var linked = autoLinkSteps(p.ingredients, p.steps);
+    p.steps = linked.steps;
+    var timers = 0;
+    p.steps.forEach(function (st) { var t = detectTimer(st.text); if (t) { st.timer_seconds = t; timers++; } });
+    if (linked.linked) warnings.push('Linked ' + linked.linked + ' amount' + (linked.linked === 1 ? '' : 's') + ' inside the steps so they scale. Check that they read sensibly.');
+    if (timers) warnings.push('Added ' + timers + ' timer' + (timers === 1 ? '' : 's') + ' from the times in the steps. Clear any you do not want.');
+    var noAmt = p.ingredients.filter(function (i) { return i.amount === ''; }).length;
+    if (noAmt) warnings.push(noAmt + ' ingredient' + (noAmt === 1 ? ' has' : 's have') + ' no amount (for example "salt to taste"). Give each a starting amount.');
+    var withG = p.ingredients.filter(function (i) { return i.grams_per_cup; }).length;
+    if (withG) warnings.push('Picked up weights for ' + withG + ' ingredient' + (withG === 1 ? '' : 's') + ' from the brackets, so they can switch exactly between cups and grams.');
+    p.warnings = warnings;
+    return p;
   }
 
   // ---------- validation ----------
@@ -320,6 +541,8 @@
     UNITS: UNITS, LABEL: LABEL, FAMILY: FAMILY, fractionString: fractionString, decimalString: decimalString,
     convert: convert, formatAmount: formatAmount, parseAmount: parseAmount, parseIngredientLine: parseIngredientLine,
     parseRecipeText: parseRecipeText, normalize: normalize, slugify: slugify, uniqueSlug: uniqueSlug,
-    combineIngredients: combineIngredients, encodeShare: encodeShare, decodeShare: decodeShare, nameKey: nameKey
+    combineIngredients: combineIngredients, encodeShare: encodeShare, decodeShare: decodeShare, nameKey: nameKey,
+    smartParse: smartParse, amountToInput: amountToInput, recipeFromJsonLd: recipeFromJsonLd, extractJsonLdRecipe: extractJsonLdRecipe, htmlToText: htmlToText,
+    decodeEntities: decodeEntities, detectTimer: detectTimer, autoLinkSteps: autoLinkSteps, looksLikeUrl: looksLikeUrl
   };
 });

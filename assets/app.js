@@ -725,7 +725,7 @@
     function addIngRow(ing) {
       var id = ing && ing.id ? ing.id : ('000' + nextId++).slice(-4);
       var row = el('div', { class: 'row ing', 'data-id': id });
-      var amount = el('input', { type: 'text', inputmode: 'decimal', class: 'amount', 'aria-label': 'Amount', placeholder: '1 1/2', value: ing && ing.amount !== '' && ing.amount != null ? String(ing.amount) : '' });
+      var amount = el('input', { type: 'text', inputmode: 'decimal', class: 'amount', 'aria-label': 'Amount', placeholder: '1 1/2', value: ing && ing.amount !== '' && ing.amount != null ? L.amountToInput(ing.amount) : '' });
       var unit = unitSelect(ing && ing.unit);
       var name = el('input', { type: 'text', class: 'name', 'aria-label': 'Ingredient', placeholder: 'all-purpose flour', value: ing ? ing.name : '' });
       var gpc = el('input', { type: 'text', inputmode: 'decimal', class: 'gpc', 'aria-label': 'Grams per cup (optional)', title: 'Grams in one US cup of this ingredient (optional, lets you switch cups to grams)', placeholder: 'g/cup', value: ing && ing.grams_per_cup ? String(ing.grams_per_cup) : '' });
@@ -786,21 +786,75 @@
       }
     } });
 
-    // Paste a whole recipe: fills the form; the person checks it and saves.
-    var whole = el('textarea', { id: 'f-whole', rows: '8', placeholder: 'Pancakes\nServes 4\n\nIngredients\n1 1/2 cups flour\n1 egg\n\nInstructions\n1. Mix everything.\n2. Cook in a hot pan.' });
-    var wholeMsg = el('p', { class: 'muted small', role: 'status' });
-    var wholeBtn = el('button', { type: 'button', text: 'Fill the form from this', onclick: function () {
-      var p = L.parseRecipeText(whole.value);
-      if (!p.ingredients.length && !p.steps.length) { wholeMsg.textContent = 'I could not find an Ingredients or Instructions heading. Add those words on their own lines and try again.'; return; }
+    // Paste anything (a link, a copied page, a typed recipe): fills the form for the person to check.
+    var READER_DOC = 'https://github.com/AdamM0909/Cooking/blob/main/docs/LINK_IMPORT.md';
+    var whole = el('textarea', { id: 'f-whole', rows: '8', placeholder: 'Paste a link, or paste the recipe itself (a whole copied web page is fine).\n\nExample:\nPancakes\nServes 4\nIngredients\n1 1/2 cups flour\n1 egg\nInstructions\n1. Mix everything.\n2. Cook in a hot pan for 3 minutes.' });
+    var wholeMsg = el('div', { class: 'muted small', role: 'status' });
+    var readerBox = el('input', { type: 'url', id: 'f-reader', placeholder: 'https://your-reader.your-name.workers.dev', value: loadPref('reader') || '' });
+    var readerDetails = el('details', { class: 'reader-setup' }, [
+      el('summary', { text: 'Reading links: one-time setup' }),
+      el('p', { class: 'muted small', text: 'Browsers are not allowed to open other websites directly, so reading a link needs a small free helper that you set up once. Until then, open the recipe page, select all, copy, and paste the text here instead. That works on any site.' }),
+      el('p', { class: 'small' }, [el('a', { href: READER_DOC, target: '_blank', rel: 'noopener', text: 'Step-by-step setup (about 5 minutes)' })]),
+      el('label', { for: 'f-reader', class: 'small', text: 'Link reader address' }), readerBox,
+      el('button', { type: 'button', text: 'Save address', onclick: function () { savePref('reader', readerBox.value.trim()); wholeMsg.textContent = 'Saved. Now paste a link and press Make sense of it.'; } })
+    ]);
+
+    function showResult(p, extra) {
+      clear(wholeMsg);
+      var made = 'Filled in ' + p.ingredients.length + ' ingredient' + (p.ingredients.length === 1 ? '' : 's') + ' and ' + p.steps.length + ' step' + (p.steps.length === 1 ? '' : 's') + '. Check everything below, then save.';
+      wholeMsg.appendChild(el('p', { text: made }));
+      var notes = (extra || []).concat(p.warnings || []);
+      if (notes.length) wholeMsg.appendChild(el('ul', {}, notes.map(function (w) { return el('li', { text: w }); })));
+    }
+
+    function applyParsed(p) {
       if (p.title) title.value = p.title;
       if (p.base_servings) servings.value = p.base_servings;
       if (p.notes) notes.value = notes.value ? notes.value + '\n' + p.notes : p.notes;
+      if (p.credit && !credit.value) credit.value = p.credit;
+      if (p.tags && p.tags.length) {
+        var have = tags.value.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        p.tags.forEach(function (t) { if (have.indexOf(t) < 0) have.push(t); });
+        tags.value = have.join(', ');
+      }
+      if (p.sources && p.sources[0] && !source.value) source.value = p.sources[0].url;
       clear(ingBox); clear(stepBox); nextId = 1;
-      p.ingredients.forEach(function (i) { i.id = ''; addIngRow(i); });
+      p.ingredients.forEach(function (i) { addIngRow(i); nextId = Math.max(nextId, parseInt(i.id, 10) + 1); });
       p.steps.forEach(addStepRow);
       if (!p.ingredients.length) addIngRow();
       if (!p.steps.length) addStepRow();
-      wholeMsg.textContent = 'Filled in ' + p.ingredients.length + ' ingredients and ' + p.steps.length + ' steps. Check the amounts, and use "Insert ingredient amount" in steps so they scale.';
+    }
+
+    var wholeBtn = el('button', { type: 'button', class: 'primary', text: 'Make sense of it', onclick: function () {
+      var v = whole.value.trim();
+      if (!v) { wholeMsg.textContent = 'Paste a link or the recipe text first.'; return; }
+      function done(p, extra) {
+        if (!p.ingredients.length && !p.steps.length) {
+          wholeMsg.textContent = 'I could not find a recipe in that. Try copying the whole page (select all, copy) or just the ingredients and steps.';
+          return;
+        }
+        applyParsed(p); showResult(p, extra);
+        title.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+      if (!L.looksLikeUrl(v)) { done(L.smartParse(v)); return; }
+
+      var reader = (loadPref('reader') || '').trim();
+      if (!reader) {
+        wholeMsg.textContent = 'That is a link. Reading links needs a one-time setup (below). Until then: open the page, select all, copy, and paste the text here instead.';
+        readerDetails.open = true; return;
+      }
+      wholeBtn.disabled = true; wholeMsg.textContent = 'Reading the page\u2026';
+      fetch(reader + (reader.indexOf('?') < 0 ? '?' : '&') + 'url=' + encodeURIComponent(v))
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d || !d.ok) throw new Error((d && d.error) || 'The reader could not load that page.');
+          done(L.smartParse(d.recipe ? JSON.stringify(d.recipe) : (d.text || ''), d.url || v),
+               d.recipe ? [] : ['This page has no structured recipe data, so I worked from its text. Please check it carefully.']);
+        })
+        .catch(function (e) {
+          wholeMsg.textContent = 'Could not read that link (' + (e && e.message ? e.message : 'no answer') + '). Check the reader address below, or open the page, select all, copy, and paste the text here.';
+        })
+        .then(function () { wholeBtn.disabled = false; });
     } });
 
     function collect() {
@@ -835,10 +889,10 @@
     app.appendChild(el('p', {}, [el('a', { href: slug ? '#/u/' + slug : '#/', text: '← Cancel' })]));
     app.appendChild(el('h1', { text: slug ? 'Edit recipe' : 'Add a recipe' }));
     var form = el('form', { class: 'editor', novalidate: 'novalidate' }, [
-      slug ? null : el('details', { class: 'quick' }, [
-        el('summary', { text: 'Quick start: paste a whole recipe' }),
-        el('p', { class: 'muted small', text: 'Paste the title, then lines such as "Ingredients" and "Instructions" (or "Directions"). Copy it from a website, a message, or your notes. Nothing leaves your device.' }),
-        whole, wholeBtn, wholeMsg]),
+      slug ? null : el('details', { class: 'quick', open: 'open' }, [
+        el('summary', { text: 'Quick start: paste a link or a whole recipe' }),
+        el('p', { class: 'muted small', text: 'Paste a link, a copied web page, a message, or your own notes. Ingredients and steps are sorted out for you, amounts in the steps are linked so they scale, and times become timers. Nothing is saved until you press Save.' }),
+        whole, wholeBtn, wholeMsg, readerDetails]),
       el('label', { for: 'f-title', text: 'Title' }), title,
       el('label', { for: 'f-credit', text: 'Credit (optional)' }), credit,
       el('label', { for: 'f-serv', text: 'Serves' }), servings,
