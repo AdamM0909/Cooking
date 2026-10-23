@@ -27,13 +27,15 @@ for (const slug of slugs) {
   if (!res.recipe) { fail(slug, res.error); continue; }
   if (r.image && !existsSync(join(root, r.image)) && !existsSync(join(dir, r.image))) fail(slug, `image "${r.image}" not found`);
 
+  // Gentle hints, summarised so a normal recipe does not print a wall of text.
   const used = new Set(r.steps.flatMap(s => [...s.text.matchAll(/\{(\d{4})\}/g)].map(m => m[1])));
-  for (const i of res.recipe.ingredients) {
-    if (!used.has(i.id)) console.warn(`${slug}: ingredient ${i.id} (${i.name}) is never referenced in a step (fine, but check)`);
-    if (i.unit && ['cup', 'tbsp', 'tsp'].includes(i.unit) && !i.grams_per_cup && !/oil|milk|water|juice|vinegar|stock|broth|cream|wine|extract|sauce|syrup|honey/i.test(i.name)) {
-      console.warn(`${slug}: ${i.name} has no grams_per_cup, so it cannot switch to grams (ignore for liquids)`);
-    }
+  const unlinked = res.recipe.ingredients.filter(i => !used.has(i.id));
+  if (unlinked.length && res.recipe.steps.length) {
+    console.warn(`${slug}: ${unlinked.length} of ${res.recipe.ingredients.length} ingredients are not linked into a step with {id}, so their amounts will not show or scale inside the steps (fine for seasonings): ${unlinked.slice(0, 5).map(i => i.name).join(', ')}${unlinked.length > 5 ? ', ...' : ''}`);
   }
+  const noWeight = res.recipe.ingredients.filter(i => ['cup', 'tbsp', 'tsp'].includes(i.unit) && !i.grams_per_cup
+    && !/oil|milk|water|juice|vinegar|stock|broth|cream|wine|extract|sauce|syrup|honey|salt|pepper|powder|spice|paprika|cayenne|seasoning/i.test(i.name));
+  if (noWeight.length) console.warn(`${slug}: no grams_per_cup for ${noWeight.map(i => i.name).join(', ')}, so these cannot switch to grams or ounces exactly`);
 }
 console.log(errors ? `${errors} problem(s) found` : `${slugs.length} recipe(s) OK`);
 process.exit(errors ? 1 : 0);

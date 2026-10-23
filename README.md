@@ -40,17 +40,26 @@ npm run serve      # http://localhost:8000 (opening index.html as a file will no
 npm test           # unit tests for the logic in assets/lib.js (Node 18+, no dependencies)
 npm run validate   # checks every file in recipes/
 npm run check      # both
+npm run e2e        # browser checks (needs a running site and a browser, see e2e/README.md)
 npm run build:worker   # regenerate worker/recipe-reader.js after editing lib.js
 npm run bump           # new version number in lib.js, index.html and sw.js (do this with every site change)
 ```
 
-CI runs the tests and the recipe validator on every pull request.
+CI runs the tests and the recipe validator on every pull request. Before a release, `npm run e2e` drives the real site in a
+browser: security, accessibility, keyboard use, failure modes (blocked or full storage), round trips and more.
 
 ## Updates and versions
 
 The footer shows the running version. Every file request bypasses the browser's cache, the page URLs carry a
 version stamp, and when a newer version arrives while the app is open an **Update now** banner appears.
 Run `npm run bump` with each change (a test checks that the version matches everywhere).
+
+## Safety
+
+Everything typed or pasted is shown as plain text, never as markup. The page also carries a content-security rule (no
+inline scripts, no outside code, images only from itself, `data:` and `blob:`). Pasted pages and recipes have size
+limits and are read in a single pass so broken input cannot freeze the page. The optional link reader refuses every
+request until it is locked to your site and never fetches private addresses.
 
 ## Publish
 

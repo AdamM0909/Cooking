@@ -209,3 +209,4 @@ button:disabled { opacity: .4; cursor: default; }
 .update-banner { position: sticky; top: 0; z-index: 30; display: flex; justify-content: center; align-items: center; gap: 12px; padding: 8px 12px; background: var(--accent); color: var(--accent-text); }
 .update-banner button { background: var(--accent-text); color: var(--accent); border-color: var(--accent-text); }
 @media print { .ver, .update-banner { display: none !important; } }
+.cook-title { font-size: 1.05rem; margin: 0; text-align: right; }

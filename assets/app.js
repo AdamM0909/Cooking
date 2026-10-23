@@ -25,6 +25,8 @@
     return n;
   }
   function clear(n) { n.textContent = ''; return n; }
+  // Recipe slugs come from the address bar: look only at real entries, never inherited ones like "constructor".
+  function own(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
   function pad(n) { return n < 10 ? '0' + n : String(n); }
   function fmtTime(s) {
     var m = Math.floor(s / 60), r = s % 60;
@@ -43,7 +45,7 @@
   function loadPref(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function savePref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
 
-  var state = { mode: loadPref('mode') || 'cups' };
+  var state = { mode: L.FAMILY[loadPref('mode')] ? loadPref('mode') : 'cups' };
   function loadMine() { return readObj(KEYS.recipes, {}); }
   function saveMine(o) { return writeObj(KEYS.recipes, o); }
   function loadMeta() { return readObj(KEYS.meta, {}); }
@@ -70,18 +72,30 @@
   function loadBuiltIns() {
     return fetchJSON('recipes/index.json').then(function (slugs) {
       return Promise.all(slugs.map(function (s) {
-        return fetchJSON('recipes/' + s + '.json').then(function (r) { r.slug = s; return r; });
-      }));
+        return fetchJSON('recipes/' + s + '.json').then(function (r) {
+          var c = L.normalize(r);
+          if (!c.recipe) return null; // a damaged shared recipe is skipped, not fatal
+          c.recipe.slug = s;
+          return c.recipe;
+        }, function () { return null; });
+      })).then(function (all) { return all.filter(Boolean); });
     });
   }
-  // ref is 'r:slug' (built in) or 'u:slug' (added in the app)
+  // ref is 'r:slug' (built in) or 'u:slug' (added in the app). Everything is validated on the way in,
+  // so a damaged or hand-edited entry shows a message instead of breaking the page.
   function loadByRef(ref) {
-    var kind = ref.charAt(0), slug = ref.slice(2);
+    var kind = ref.charAt(0), slug = ref.slice(2), mine;
     if (kind === 'u') {
-      var r = loadMine()[slug];
-      return r ? Promise.resolve(r) : Promise.reject(new Error('That recipe is not in this browser.'));
+      mine = loadMine();
+      if (!own(mine, slug)) return Promise.reject(new Error('That recipe is not in this browser.'));
+      var c = L.normalize(mine[slug]);
+      return c.recipe ? Promise.resolve(c.recipe) : Promise.reject(new Error('That saved recipe is damaged (' + c.error + ').'));
     }
-    return fetchJSON('recipes/' + encodeURIComponent(slug) + '.json');
+    return fetchJSON('recipes/' + encodeURIComponent(slug) + '.json').then(function (r) {
+      var c = L.normalize(r);
+      if (!c.recipe) throw new Error('That recipe file is not valid (' + c.error + ').');
+      return c.recipe;
+    });
   }
   function imageOf(r) { return r.photo || r.image || ''; }
 
@@ -230,8 +244,10 @@
 
   function showError(err) {
     clear(app);
+    var technical = err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError || err instanceof SyntaxError;
+    if (technical && window.console) console.error(err);
     app.appendChild(el('p', { text: 'Could not load that page.' }));
-    app.appendChild(el('p', { class: 'muted', text: String(err.message || err) }));
+    app.appendChild(el('p', { class: 'muted', text: technical ? 'Something unexpected went wrong. Going back to the recipes should help.' : String(err.message || err) }));
     app.appendChild(el('p', {}, [el('a', { href: '#/', text: 'Back to recipes' })]));
   }
 
@@ -252,7 +268,11 @@
     loadBuiltIns().catch(function () { return []; }).then(function (built) {
       var mine = loadMine(), meta = loadMeta();
       var all = built.map(function (r) { return { r: r, ref: 'r:' + r.slug, tag: r.example ? 'Example' : '' }; });
-      Object.keys(mine).forEach(function (slug) { all.push({ r: mine[slug], ref: 'u:' + slug, tag: 'Mine' }); });
+      var damaged = 0;
+      Object.keys(mine).forEach(function (slug) {
+        var c = L.normalize(mine[slug]);
+        if (c.recipe) all.push({ r: c.recipe, ref: 'u:' + slug, tag: 'Mine' }); else damaged++;
+      });
       all.forEach(function (it) { it.m = meta[it.ref] || {}; });
 
       var params = new URLSearchParams(query || '');
@@ -293,6 +313,9 @@
       app.appendChild(ul); app.appendChild(empty);
       if (Object.keys(mine).length) {
         app.appendChild(el('p', { class: 'muted small', text: 'Recipes marked Mine are stored in this browser on this device. Back them up from Backup & restore.' }));
+      }
+      if (damaged) {
+        app.appendChild(el('p', { class: 'error small', text: damaged + ' saved recipe' + (damaged === 1 ? ' is' : 's are') + ' damaged and hidden. Backup & restore still downloads them so nothing is lost.' }));
       }
 
       var visible = [];
@@ -509,7 +532,7 @@
     loadByRef(ref).then(function (r) {
       document.title = 'Cooking: ' + r.title;
       var s = parseInt(new URLSearchParams(query || '').get('s'), 10);
-      var servings = s >= 1 ? s : r.base_servings, scale = servings / r.base_servings;
+      var servings = s >= 1 ? Math.min(s, 1000) : r.base_servings, scale = servings / r.base_servings;
       var byId = {}; r.ingredients.forEach(function (i) { byId[i.id] = i; });
       var idx = 0, total = r.steps.length;
       if (!total) { clear(app); app.appendChild(el('p', { text: 'This recipe has no steps yet.' })); app.appendChild(el('p', {}, [el('a', { href: '#/' + kind + '/' + slug, text: 'Back to the recipe' })])); return; }
@@ -575,7 +598,7 @@
 
       clear(app);
       app.classList.add('cooking');
-      app.appendChild(el('div', { class: 'cook-top' }, [el('a', { href: '#/' + kind + '/' + slug, text: '✕ Exit' }), el('strong', { text: r.title })]));
+      app.appendChild(el('div', { class: 'cook-top' }, [el('a', { href: '#/' + kind + '/' + slug, text: '✕ Exit' }), el('h1', { class: 'cook-title', text: r.title })]));
       app.appendChild(progress);
       app.appendChild(count);
       app.appendChild(ingDetails);
@@ -621,8 +644,8 @@
         var ul = el('ul', { class: 'ingredients shop' });
         merged.forEach(function (m) {
           var text = m.items.map(function (it) { return L.formatAmount(it, 1, state.mode); }).join(' + ') + ' ' + m.name;
-          var cb = el('input', { type: 'checkbox', checked: list.got[m.key], onchange: function () { list.got[m.key] = cb.checked; saveList(list); li.classList.toggle('got', cb.checked); } });
-          var li = el('li', { class: list.got[m.key] ? 'got' : '' }, [el('label', {}, [cb, document.createTextNode(text)])]);
+          var cb = el('input', { type: 'checkbox', checked: own(list.got, m.key) && list.got[m.key], onchange: function () { list.got[m.key] = cb.checked; saveList(list); li.classList.toggle('got', cb.checked); } });
+          var li = el('li', { class: own(list.got, m.key) && list.got[m.key] ? 'got' : '' }, [el('label', {}, [cb, document.createTextNode(text)])]);
           ul.appendChild(li);
         });
         list.extra.forEach(function (x, i) {
@@ -698,8 +721,12 @@
   }
 
   function showEditor(slug) {
-    var mine = loadMine(), base = slug ? mine[slug] : null;
-    if (slug && !base) { showError(new Error('That recipe is not in this browser.')); return; }
+    var mine = loadMine(), base = null;
+    if (slug) {
+      var cur = own(mine, slug) ? L.normalize(mine[slug]) : null;
+      if (!cur || !cur.recipe) { showError(new Error(cur ? 'That saved recipe is damaged (' + cur.error + ').' : 'That recipe is not in this browser.')); return; }
+      base = cur.recipe;
+    }
     document.title = (slug ? 'Edit recipe' : 'Add recipe') + ' | Our Kitchen';
 
     var photo = base && base.photo ? base.photo : '';
@@ -758,7 +785,7 @@
     var sections = el('datalist', { id: 'f-sections' });
     function refreshSections() {
       clear(sections);
-      var seen = {};
+      var seen = Object.create(null);
       Array.prototype.forEach.call(ingBox.querySelectorAll('.grp'), function (g) {
         var v = g.value.trim();
         if (v && !seen[v]) { seen[v] = true; sections.appendChild(el('option', { value: v })); }
@@ -1013,6 +1040,13 @@
     app.appendChild(el('p', {}, [el('a', { href: '#/', text: '← All recipes' })]));
     app.appendChild(el('h1', { text: 'Backup & restore' }));
     app.appendChild(el('p', { text: 'Recipes you add here are stored in this browser on this device only. Clearing site data, or using another phone or computer, will not carry them over. Download a backup now and then, and import it to restore or move them. Backups include your favorites, ratings, cook counts and notes.' }));
+    // Browsers allow roughly 5 million characters per site; say how much is used so a full store is no surprise.
+    var used = 0;
+    try { Object.keys(KEYS).forEach(function (k) { used += (localStorage.getItem(KEYS[k]) || '').length; }); } catch (e) { used = -1; }
+    if (used >= 0) {
+      var pct = Math.min(100, Math.round(used / 50000));
+      app.appendChild(el('p', { class: 'muted small', text: 'Storage used by your recipes, notes and list: about ' + (used / 1000000).toFixed(1) + ' MB of roughly 5 MB available in this browser (' + pct + '%).' + (pct >= 80 ? ' It is getting full: download a backup and remove photos you do not need.' : '') }));
+    }
     app.appendChild(el('div', { class: 'toolbar' }, [
       el('button', { type: 'button', class: 'primary', text: 'Download all my recipes (' + count + ')', onclick: function () {
         if (!count) { msg.textContent = 'You have not added any recipes yet.'; return; }
@@ -1037,14 +1071,16 @@
     app.classList.remove('cooking');
     if (!/^\/cook\//.test(path)) keepAwake(false);
     updateNav();
-    if ((m = /^\/edit\/([\w-]+)$/.exec(path))) showEditor(m[1]);
-    else if ((m = /^\/(r|u)\/([\w-]+)$/.exec(path))) showRecipe(m[1], m[2]);
-    else if ((m = /^\/cook\/(r|u)\/([\w-]+)$/.exec(path))) showCook(m[1], m[2], query);
-    else if ((m = /^\/import\/([\w-]+)$/.exec(path))) showImport(m[1]);
-    else if (path === '/new') showEditor(null);
-    else if (path === '/list') showShopping();
-    else if (path === '/backup') showBackup();
-    else showList(query);
+    try {
+      if ((m = /^\/edit\/([\w-]+)$/.exec(path))) showEditor(m[1]);
+      else if ((m = /^\/(r|u)\/([\w-]+)$/.exec(path))) showRecipe(m[1], m[2]);
+      else if ((m = /^\/cook\/(r|u)\/([\w-]+)$/.exec(path))) showCook(m[1], m[2], query);
+      else if ((m = /^\/import\/([\w-]+)$/.exec(path))) showImport(m[1]);
+      else if (path === '/new') showEditor(null);
+      else if (path === '/list') showShopping();
+      else if (path === '/backup') showBackup();
+      else showList(query);
+    } catch (e) { showError(e); }
   }
   window.addEventListener('hashchange', route);
   route();
@@ -1067,6 +1103,8 @@
     navigator.serviceWorker.addEventListener('controllerchange', function () { if (hadController) showUpdateBanner(); });
     window.addEventListener('load', function () {
       navigator.serviceWorker.register('sw.js').then(function (reg) {
+        // Browsers only look for a new service worker about once a day on their own, so ask on every load and whenever the app returns to the front.
+        reg.update().catch(function () { /* offline */ });
         document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') reg.update().catch(function () { /* offline */ }); });
       }).catch(function () { /* optional */ });
     });
