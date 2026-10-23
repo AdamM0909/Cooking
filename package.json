@@ -8,7 +8,8 @@
     "check": "node --test && node tools/validate.mjs",
     "serve": "python3 -m http.server 8000",
     "build:worker": "node tools/build-worker.mjs",
-    "bump": "node tools/bump-version.mjs"
+    "bump": "node tools/bump-version.mjs",
+    "e2e": "node e2e/run-all.cjs"
   },
   "license": "UNLICENSED"
 }

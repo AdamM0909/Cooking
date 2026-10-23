@@ -7,7 +7,25 @@
   'use strict';
 
   // Bump with `npm run bump` whenever the site changes: it keeps the page URLs, service worker cache and footer in step.
-  var VERSION = '2026.10.22-6';
+  var VERSION = '2026.10.23-3';
+
+  // Lookup tables indexed by user text must not inherit names like "constructor" or "toString".
+  function dict(o) { return Object.assign(Object.create(null), o); }
+
+  // Upper bounds keep a pasted page or a damaged file from freezing the page or filling storage.
+  var LIMITS = { ingredients: 300, steps: 200, stepText: 5000, notes: 10000, amount: 100000, minAmount: 0.001, servings: 1000, input: 400000, html: 3000000 };
+
+  var SUPERSCRIPT = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+                      '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4', '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9' };
+  // Web copy is full of look-alike characters: non-breaking spaces, the fraction slash, small
+  // superscript digits, minus signs, zero-width marks, direction overrides and stray control codes.
+  function cleanChars(str) {
+    return String(str)
+      .replace(/[     　]/g, ' ')
+      .replace(/[​-‍⁠﻿‪-‮⁦-⁩\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+      .replace(/[⁰¹²³⁴-⁹₀-₉]/g, function (c) { return SUPERSCRIPT[c]; })
+      .replace(/⁄/g, '/').replace(/−/g, '-');
+  }
 
   // ---------- units ----------
   // Every unit converts through a base of grams (weight) or millilitres (volume).
@@ -50,7 +68,9 @@
 
   function decimalString(x) {
     if (x >= 10) return String(Math.round(x));
-    return String(Math.round(x * 10) / 10);
+    if (x >= 0.1) return String(Math.round(x * 10) / 10);
+    if (x >= 0.01) return String(Math.round(x * 100) / 100);
+    return '<0.01'; // never show a real amount as 0
   }
 
   // base is grams (kind 'w') or millilitres (kind 'v'); pick a sensible unit in the mode.
@@ -73,6 +93,7 @@
   function convert(ing, scale, mode) {
     var amount = ing.amount * scale, u = ing.unit && UNITS[ing.unit];
     if (!u || u.sys === 'both') return { amount: amount, unit: ing.unit || '' };
+    if (!FAMILY[mode]) mode = 'cups';
     if (scale === 1 && FAMILY[mode].indexOf(ing.unit) >= 0) return { amount: amount, unit: ing.unit };
     var kind = u.kind, base = amount * u.f, d = ing.grams_per_cup;
     if (d) {
@@ -98,20 +119,22 @@
   var VULGAR = { '½': 0.5, '⅓': 1 / 3, '⅔': 2 / 3, '¼': 0.25, '¾': 0.75,
                  '⅛': 0.125, '⅜': 0.375, '⅝': 0.625, '⅞': 0.875 };
 
-  // "1 1/2", "3/4", "1.5", "1½", "1-2" (lower end) -> number, or NaN.
+  // "1 1/2", "3/4", "1.5", "1,5", "1 / 2", "1½", "1-2" (lower end) -> number, or NaN for anything else.
   function parseAmount(str) {
-    var s = String(str == null ? '' : str).trim().toLowerCase();
-    if (!s) return NaN;
+    var s = cleanChars(str == null ? '' : str).trim().toLowerCase();
+    if (!s || s.length > 60) return NaN;
     s = s.replace(/[¼-¾⅓⅔⅛-⅞]/g, function (c) { return ' ' + VULGAR[c] + ' '; });
+    s = s.replace(/(\d)\s*\/\s*(\d)/g, '$1/$2');
+    s = s.replace(/(\d),(\d{1,2})(?!\d)/g, '$1.$2').replace(/(\d),(\d{3})(?!\d)/g, '$1$2');
     s = s.replace(/^(\d+)-(\d+\/\d+)$/, '$1 $2');
-    s = s.split(/\s*(?:-|–|to)\s*/)[0].trim();
+    s = s.split(/\s*(?:-|–|—|\bto\b)\s*/)[0].trim();
+    if (!s) return NaN;
     var total = 0, tokens = s.split(/\s+/);
     for (var i = 0; i < tokens.length; i++) {
       var t = tokens[i], v;
-      if (t.indexOf('/') > 0) {
-        var p = t.split('/');
-        v = parseFloat(p[0]) / parseFloat(p[1]);
-      } else v = Number(t);
+      if (/^\d+\/\d+$/.test(t)) { var p = t.split('/'); v = Number(p[0]) / Number(p[1]); }
+      else if (/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(t)) v = Number(t);
+      else return NaN;
       if (!isFinite(v)) return NaN;
       total += v;
     }
@@ -123,17 +146,35 @@
     tsp: 'tsp', teaspoon: 'tsp', teaspoons: 'tsp', g: 'g', gram: 'g', grams: 'g', kg: 'kg', kilogram: 'kg',
     kilograms: 'kg', ml: 'ml', milliliter: 'ml', milliliters: 'ml', millilitre: 'ml', millilitres: 'ml',
     l: 'l', liter: 'l', liters: 'l', litre: 'l', litres: 'l', oz: 'oz', ounce: 'oz', ounces: 'oz',
-    lb: 'lb', lbs: 'lb', pound: 'lb', pounds: 'lb', pinch: 'pinch', stick: 'stick', sticks: 'stick'
+    lb: 'lb', lbs: 'lb', pound: 'lb', pounds: 'lb', pinch: 'pinch', stick: 'stick', sticks: 'stick', dl: 'dl', cl: 'cl'
   };
+  var NUMBER_WORDS = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+
+  var VUL = '[\u00BC-\u00BE\u2153\u2154\u215B-\u215E]';
+  var NUM = '(?:\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+\\s*' + VUL + '|' + VUL + '|\\d+[.,]\\d+|\\.\\d+|\\d+)';
+  var AMOUNT_RE = new RegExp('^(' + NUM + '(?:\\s*(?:-|\\u2013|\\u2014|\\bto\\b)\\s*' + NUM + ')?)(?=[\\s(a-zA-Z/]|$)', 'i');
+  var PLUS_RE = new RegExp('^plus\\s+(' + NUM + ')\\s*([a-zA-Z]+)\\b\\.?\\s*', 'i');
+  var SIZE_UNITS = '(?:oz|ounces?|grams?|g|kg|ml|lbs?|pounds?)';
+  var SIZE_PAREN = new RegExp('^\\(\\s*(\\d+(?:\\.\\d+)?)[\\s-]*(' + SIZE_UNITS + ')\\.?\\s*\\)\\s*', 'i');
+  var SIZE_PLAIN = new RegExp('^(\\d+(?:\\.\\d+)?)[\\s-]*(' + SIZE_UNITS + ')\\b\\.?[\\s-]*(?=(?:cans?|jars?|packages?|pkgs?|bottles?|boxes|box|bags?|tins?|cartons?|tubs?|containers?|packets?|bars?)\\b)', 'i');
+  var ALT_MEASURE = /^([a-zA-Z]+\.?)\s*\/\s*\d+(?:\.\d+)?\s*(?:ml|l|g|kg|oz|lb|lbs|fl\.?\s*oz)\b\.?\s*/i;
+
+  UNITS = dict(UNITS); LABEL = dict(LABEL); FAMILY = dict(FAMILY); UNIT_WORDS = dict(UNIT_WORDS); NUMBER_WORDS = dict(NUMBER_WORDS); VULGAR = dict(VULGAR); SUPERSCRIPT = dict(SUPERSCRIPT);
 
   var STICK_TBSP = 8; // tablespoons in a US stick of butter
 
+  function sizeUnit(w) {
+    w = w.toLowerCase();
+    return /^o/.test(w) ? 'oz' : /^gr/.test(w) ? 'g' : /^(p|lb)/.test(w) ? 'lb' : w;
+  }
+
   // "1 1/2 cups flour, sifted" -> { amount: 1.5, unit: 'cup', name: 'flour, sifted' }
-  // "1 cup (125 g) flour" also gives grams_per_cup: 125 so the weight is remembered.
-  // Loose wording is turned into an amount and flagged in `estimated`: "salt to taste",
-  // "splash of hot sauce". "1/2-1 tsp" keeps the lower figure and the range in the name.
+  // Understood on the way: "1 cup (125 g) flour" (remembers 125 g as grams_per_cup), "1 (14 oz) can
+  // tomatoes" (can size kept in the name), "1 tablespoon plus 1 teaspoon" (added up), "1 cup/240 ml",
+  // "1/2 stick butter" (4 tbsp), "2 dl", "1,5 cups", "1/2-1 tsp" (lower figure, range kept in the name),
+  // "salt to taste" and "two eggs". Unmeasured "splash of" lines come back with `unmeasured` set.
   function parseIngredientLine(line) {
-    var s = String(line).replace(/^[\s\-*•]+/, '').trim();
+    var s = cleanChars(line).replace(/^[\s\-*•]+/, '').trim().slice(0, 400);
     if (!s) return null;
     var sp = /^(?:a\s+)?(splash|drizzle)\s+of\s+(.+)$/i.exec(s);
     if (sp) {
@@ -141,37 +182,58 @@
       var what = tidyName(sp[2].trim());
       return { amount: '', unit: '', name: what, unmeasured: 'a ' + sp[1].toLowerCase() + ' of ' + what };
     }
-    var m = /^([\d\s/.¼-¾⅐-⅞-]+)(.*)$/.exec(s);
-    var amount = NaN, rest = s, unit = '', rangeText = '';
+    var m = AMOUNT_RE.exec(s);
+    var amount = NaN, rest = s, unit = '', rangeText = '', size = '';
     if (m) {
       amount = parseAmount(m[1]);
       if (isFinite(amount)) {
-        rest = m[2].trim();
-        var t = m[1].trim();
-        if (!/^\d+-\d+\/\d+$/.test(t) && /\d\s*(?:-|–|to)\s*[\d¼-¾⅐-⅞]/i.test(t)) rangeText = t;
-      } else rest = s;
+        rest = s.slice(m[0].length).trim();
+        if (/-|–|—|\bto\b/i.test(m[1]) && !/^\d+-\d+\/\d+$/.test(m[1].trim())) rangeText = m[1].trim();
+      }
     }
-    if (!isFinite(amount)) {
-      // "a pinch of salt", "an egg", "a cup of milk", "half a lemon"
-      var wordy = /^(a|an|one|half(?: a| an)?)\s+(.+)$/i.exec(s);
+    if (isFinite(amount)) {
+      var sm = SIZE_PAREN.exec(rest) || SIZE_PLAIN.exec(rest);
+      if (sm) { size = sm[1] + ' ' + sizeUnit(sm[2]); rest = rest.slice(sm[0].length); }
+    } else {
+      // "a pinch of salt", "an egg", "two eggs", "a cup of milk", "half a lemon"
+      var wordy = /^(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half(?: a| an)?)\s+(.+)$/i.exec(s);
       if (wordy && !/^(little|few|bit|couple|splash|handful|drizzle|sprinkle|knob|squeeze|glug|touch|lot|dollop|sprig)\b/i.test(wordy[2])) {
-        amount = /^half/i.test(wordy[1]) ? 0.5 : 1; rest = wordy[2];
+        amount = /^half/i.test(wordy[1]) ? 0.5 : NUMBER_WORDS[wordy[1].toLowerCase()]; rest = wordy[2];
         var pd = /^(pinch|dash)\s+of\s+/i.exec(rest);
         if (pd) { unit = 'pinch'; rest = rest.slice(pd[0].length); }
       }
     }
+    rest = rest.replace(ALT_MEASURE, '$1 ');
     var fl = /^fl\.?\s*oz\.?\s+/i.exec(rest);
     if (unit) { /* already found ("a pinch of") */ }
-    else if (fl) { unit = 'fl_oz'; rest = rest.slice(fl[0].length); }
-    else {
+    else if (fl && isFinite(amount)) { unit = 'fl_oz'; rest = rest.slice(fl[0].length); }
+    else if (isFinite(amount)) {
       var w = /^([a-zA-Z]+)\.?(?:\s+|$)/.exec(rest);
-      if (w && UNIT_WORDS[w[1].toLowerCase()] && isFinite(amount)) {
-        unit = UNIT_WORDS[w[1].toLowerCase()];
-        rest = rest.slice(w[0].length);
+      if (w) {
+        var word = w[1], key = word.toLowerCase();
+        if (word === 'T') key = 'tbsp'; else if (word === 't') key = 'tsp';
+        if (UNIT_WORDS[key] || key === 'tbsp' || key === 'tsp') {
+          unit = UNIT_WORDS[key] || key;
+          rest = rest.slice(w[0].length);
+        }
       }
     }
     if (unit === 'stick') { unit = 'tbsp'; amount *= STICK_TBSP; }
+    else if (unit === 'dl') { unit = 'ml'; amount *= 100; }
+    else if (unit === 'cl') { unit = 'ml'; amount *= 10; }
+
+    // "1 tablespoon plus 1 teaspoon sugar": add them up in the smaller unit
+    var pl = unit && isFinite(amount) ? PLUS_RE.exec(rest) : null;
+    if (pl) {
+      var a2 = parseAmount(pl[1]), u2 = UNIT_WORDS[pl[2].toLowerCase()];
+      if (isFinite(a2) && u2 && UNITS[u2] && UNITS[u2].kind === UNITS[unit].kind && UNITS[u2].kind !== 'c') {
+        var small = UNITS[u2].f < UNITS[unit].f ? u2 : unit;
+        amount = Math.round((amount * UNITS[unit].f + a2 * UNITS[u2].f) / UNITS[small].f * 1000) / 1000; unit = small;
+        rest = rest.slice(pl[0].length);
+      }
+    }
     rest = rest.replace(/^of\s+/i, '').trim();
+
     var gpc;
     rest = rest.replace(/\(\s*([\d.]+)\s*(g|grams?|oz|ounces?)\.?\s*\)/i, function (all, n, u) {
       var spoon = unit === 'cup' || unit === 'tbsp' || unit === 'tsp';
@@ -179,11 +241,13 @@
         var grams = parseFloat(n) * (/^o/i.test(u) ? UNITS.oz.f : 1), ml = amount * UNITS[unit].f;
         var d = Math.round(grams / ml * UNITS.cup.f);
         if (d >= 20 && d <= 400) gpc = d;
+        return '';
       }
-      return '';
+      return unit ? '' : all; // with no unit the bracket is a size ("(14 oz) can"), so it stays
     });
-    rest = rest.replace(/\(\s*[\d./\s¼-¾⅐-⅞-]+\s*(?:ml|l|g|kg|oz|lb|lbs|cups?|tbsp|tsp|fl\.?\s*oz)\.?\s*\)/gi, '');
+    if (unit) rest = rest.replace(/\(\s*[\d./\s¼-¾⅐-⅞-]+\s*(?:ml|l|g|kg|oz|lb|lbs|cups?|tbsp|tsp|fl\.?\s*oz)\.?\s*\)/gi, '');
     rest = rest.replace(/\s{2,}/g, ' ').replace(/\s+,/g, ',').trim();
+    if (size) { var parts = rest.split(','); parts[0] = parts[0].replace(/\s+$/, '') + ' (' + size + ')'; rest = parts.join(','); }
     if (rangeText) rest += ' (' + rangeText + (unit ? ' ' + LABEL[unit] : '') + ')';
     rest = tidyName(rest);
     var out = { amount: isFinite(amount) ? amount : '', unit: unit, name: rest };
@@ -377,13 +441,43 @@
     });
   }
 
+  var SKIP_TAGS = { script: 1, style: 1, noscript: 1, svg: 1, nav: 1, header: 1, footer: 1, form: 1, iframe: 1 };
+  var BREAK_TAGS = { p: 1, div: 1, li: 1, h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1, tr: 1, ul: 1, ol: 1, section: 1, article: 1 };
+
+  SKIP_TAGS = dict(SKIP_TAGS); BREAK_TAGS = dict(BREAK_TAGS);
+
+  // One pass over the page, so a huge or deliberately broken page cannot make it slow. Blocks that
+  // never close (an unclosed <nav>) are kept rather than swallowing the rest of the page.
   function htmlToText(html) {
-    return decodeEntities(String(html)
-      .replace(/<(script|style|noscript|svg|nav|header|footer|form|iframe)\b[\s\S]*?<\/\1>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|tr|ul|ol|section|article)>/gi, '\n')
-      .replace(/<[^>]+>/g, ' '))
-      .replace(/[ \t ]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    html = String(html).slice(0, LIMITS.html);
+    var out = [], i = 0, n = html.length, skipName = '', depth = 0, gt = -2, lastClose = Object.create(null);
+    function lastCloseOf(name) {
+      if (lastClose[name] === undefined) {
+        var re = new RegExp('<\\/' + name + '\\s*>', 'gi'), mm, last = -1;
+        while ((mm = re.exec(html))) last = mm.index;
+        lastClose[name] = last;
+      }
+      return lastClose[name];
+    }
+    while (i < n) {
+      var lt = html.indexOf('<', i);
+      if (lt < 0) { if (!skipName) out.push(html.slice(i)); break; }
+      if (!skipName && lt > i) out.push(html.slice(i, lt));
+      if (html.substr(lt, 4) === '<!--') { var ce = html.indexOf('-->', lt + 4); i = ce < 0 ? n : ce + 3; continue; }
+      if (gt < lt) gt = html.indexOf('>', lt);
+      if (gt < 0) { if (!skipName) out.push(html.slice(lt)); break; }
+      var tag = /^<(\/?)([a-zA-Z][a-zA-Z0-9]*)/.exec(html.substr(lt, 40));
+      if (!tag) { if (!skipName) out.push('<'); i = lt + 1; continue; }
+      var closing = tag[1] === '/', name = tag[2].toLowerCase(), selfClosing = html.charAt(gt - 1) === '/';
+      if (skipName) {
+        if (name === skipName) { if (closing) { if (--depth <= 0) skipName = ''; } else if (!selfClosing) depth++; }
+      } else if (SKIP_TAGS[name] && !closing) {
+        if (!selfClosing && lastCloseOf(name) > lt) { skipName = name; depth = 1; }
+      } else if (name === 'br' || (closing && BREAK_TAGS[name])) out.push('\n');
+      else out.push(' ');
+      i = gt + 1;
+    }
+    return decodeEntities(out.join('')).replace(/[ \t ]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   function isRecipeNode(x) {
@@ -398,9 +492,15 @@
   }
   // Most recipe sites embed schema.org Recipe data in a JSON-LD script tag.
   function extractJsonLdRecipe(html) {
-    var re = /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi, m;
-    while ((m = re.exec(String(html)))) {
-      try { var f = findRecipeNode(JSON.parse(m[1].trim()), 0); if (f) return f; } catch (e) { /* not valid JSON, try the next block */ }
+    html = String(html).slice(0, LIMITS.html);
+    var open = /<script\b([^>]{0,400})>/gi, close = /<\/script\s*>/gi, m;
+    while ((m = open.exec(html))) {
+      if (!/application\/ld\+json/i.test(m[1])) continue;
+      close.lastIndex = open.lastIndex;
+      var c = close.exec(html);
+      if (!c) return null; // nothing closes after this point, so nothing further can be a complete block
+      try { var f = findRecipeNode(JSON.parse(html.slice(open.lastIndex, c.index).trim()), 0); if (f) return f; } catch (e) { /* not valid JSON, try the next block */ }
+      open.lastIndex = c.index + c[0].length;
     }
     return null;
   }
@@ -436,26 +536,31 @@
   function escapeRe(t) { return String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
   // Puts {id} in front of the first mention of each ingredient so amounts in the steps scale.
+  // An ingredient that is ambiguous (the same or a similar name elsewhere in the recipe) is left alone.
   function autoLinkSteps(ings, steps) {
-    var linked = {}, count = 0, lastWords = {}, keyCount = {};
-    ings.forEach(function (ing) { var k = nameKey(ing.name), w = k.split(' ').pop(); lastWords[w] = (lastWords[w] || 0) + 1; keyCount[k] = (keyCount[k] || 0) + 1; });
+    var linked = Object.create(null), count = 0, lastWords = Object.create(null), keyCount = Object.create(null), cands = [];
+    ings.forEach(function (ing) {
+      var k = nameKey(ing.name), w = k.split(' ').pop();
+      lastWords[w] = (lastWords[w] || 0) + 1; keyCount[k] = (keyCount[k] || 0) + 1;
+    });
+    ings.forEach(function (ing) {
+      var key = nameKey(ing.name);
+      if (!(Number(ing.amount) > 0) || key.length < 3 || keyCount[key] > 1 || lastWords[key.split(' ').pop()] > 1) return;
+      var names = [key], last = key.split(' ').pop();
+      if (last !== key && last.length >= 4 && lastWords[last] === 1) names.push(last);
+      cands.push({ id: ing.id, res: names.map(function (nm) { return new RegExp('\\b(?:(?:all the|all of the|the|your)\\s+)?' + escapeRe(nm) + 's?\\b', 'i'); }) });
+    });
     var out = steps.map(function (st) {
       var text = st.text;
-      ings.forEach(function (ing) {
-        if (linked[ing.id] || !(Number(ing.amount) > 0)) return;
-        var key = nameKey(ing.name);
-        // the same or a similar ingredient elsewhere (two "butter"s, "salt" in two sections): ambiguous, leave it
-        if (key.length < 3 || keyCount[key] > 1 || lastWords[key.split(' ').pop()] > 1) return;
-        var m = null, candidates = [key], last = key.split(' ').pop();
-        if (last !== key && last.length >= 4 && lastWords[last] === 1) candidates.push(last);
-        for (var c = 0; c < candidates.length && !m; c++) {
-          m = new RegExp('\\b(?:(?:all the|all of the|the|your)\\s+)?' + escapeRe(candidates[c]) + 's?\\b', 'i').exec(text);
-        }
+      cands.forEach(function (c) {
+        if (linked[c.id]) return;
+        var m = null;
+        for (var r = 0; r < c.res.length && !m; r++) m = c.res[r].exec(text);
         if (!m || m.index === 0) return;
         var before = text.slice(0, m.index);
         if (/\b(remaining|rest of|more|extra|additional|reserved|another|other|leftover)\s+(the\s+)?$/i.test(before)) return;
-        text = before + '{' + ing.id + '} ' + m[0].replace(/^(?:all the|all of the|the|your)\s+/i, '') + text.slice(m.index + m[0].length);
-        linked[ing.id] = true; count++;
+        text = before + '{' + c.id + '} ' + m[0].replace(/^(?:all the|all of the|the|your)\s+/i, '') + text.slice(m.index + m[0].length);
+        linked[c.id] = true; count++;
       });
       return { title: st.title, text: text };
     });
@@ -507,14 +612,16 @@
   // Takes whatever was pasted (page source, JSON-LD, a copied page, a recipe typed out) and
   // returns form-ready data plus plain-language notes about what was guessed.
   function smartParse(input, sourceUrl) {
-    var text = String(input == null ? '' : input).trim(), p = null, warnings = [];
+    var raw = String(input == null ? '' : input).slice(0, LIMITS.html), text = raw.trim(), p = null, warnings = [];
     if (/ld\+json|"Recipe"/i.test(text)) {
       var node = extractJsonLdRecipe(text);
-      if (!node) { try { node = findRecipeNode(JSON.parse(text), 0); } catch (e) { node = null; } }
+      if (!node && text.length < LIMITS.input) { try { node = findRecipeNode(JSON.parse(text), 0); } catch (e) { node = null; } }
       if (node) p = recipeFromJsonLd(node, sourceUrl);
     }
     if (!p) {
       if (/<(div|p|li|span|h[1-6]|body|html)\b/i.test(text)) text = htmlToText(text);
+      text = cleanChars(text);
+      if (text.length > LIMITS.input) { text = text.slice(0, LIMITS.input); warnings.push('That was very long, so I only read the first ' + Math.round(LIMITS.input / 1000) + ' thousand characters.'); }
       p = parseRecipeText(text);
       p.how = p.headings ? 'headings' : 'guess';
       if (!p.headings && (p.ingredients.length || p.steps.length)) {
@@ -524,6 +631,12 @@
       if (sourceUrl && /^https?:\/\//i.test(sourceUrl)) p.sources.push({ title: sourceUrl.replace(/^https?:\/\//i, '').split('/')[0], url: sourceUrl });
     }
     p.unmeasured = p.unmeasured || [];
+
+    p.unmeasured = p.unmeasured || [];
+    if (p.ingredients.length > LIMITS.ingredients) { p.ingredients = p.ingredients.slice(0, LIMITS.ingredients); warnings.push('Only the first ' + LIMITS.ingredients + ' ingredients were kept.'); }
+    if (p.steps.length > LIMITS.steps) { p.steps = p.steps.slice(0, LIMITS.steps); warnings.push('Only the first ' + LIMITS.steps + ' steps were kept.'); }
+    // text that happens to contain {0001} must not be mistaken for an amount placeholder
+    p.steps.forEach(function (st) { st.text = st.text.replace(/\{(\d{4})\}/g, '($1)').slice(0, LIMITS.stepText); });
 
     var groups = [];
     p.ingredients.forEach(function (i) { if (i.group && groups.indexOf(i.group) < 0) groups.push(i.group); });
@@ -576,18 +689,20 @@
     var title = typeof r.title === 'string' ? r.title.trim().slice(0, 200) : '';
     if (!title) return { error: 'The recipe needs a title.' };
     var servings = Number(r.base_servings);
-    if (!(servings >= 1)) return { error: 'Servings must be 1 or more.' };
+    if (!(servings >= 1) || servings > LIMITS.servings) return { error: 'Servings must be between 1 and ' + LIMITS.servings + '.' };
     if (!Array.isArray(r.ingredients) || !r.ingredients.length) return { error: 'Add at least one ingredient.' };
+    if (r.ingredients.length > LIMITS.ingredients) return { error: 'Too many ingredients (the limit is ' + LIMITS.ingredients + ').' };
     var ings = [], seen = {};
     for (var i = 0; i < r.ingredients.length; i++) {
       var x = r.ingredients[i] || {}, label = 'Ingredient ' + (i + 1);
       var id = /^\d{4}$/.test(x.id) ? x.id : pad4(i + 1);
       if (seen[id]) return { error: label + ' has a duplicate id.' };
       seen[id] = true;
-      var name = typeof x.name === 'string' ? x.name.trim() : '';
+      var name = typeof x.name === 'string' ? x.name.trim().slice(0, 200) : '';
       if (!name) return { error: label + ' needs a name.' };
       var amount = Number(x.amount);
       if (!(amount > 0)) return { error: label + ' (' + name + ') needs an amount above 0.' };
+      if (amount > LIMITS.amount || amount < LIMITS.minAmount) return { error: label + ' (' + name + ') has an amount that looks wrong.' };
       var ing = { id: id, name: name, amount: amount };
       if (typeof x.group === 'string' && x.group.trim()) ing.group = x.group.trim().slice(0, 60);
       if (x.unit) {
@@ -602,11 +717,13 @@
       ings.push(ing);
     }
     if (!Array.isArray(r.steps)) return { error: 'Steps must be a list.' };
+    if (r.steps.length > LIMITS.steps) return { error: 'Too many steps (the limit is ' + LIMITS.steps + ').' };
     var steps = [];
     for (var j = 0; j < r.steps.length; j++) {
       var st = r.steps[j] || {}, text = typeof st.text === 'string' ? st.text.trim() : '';
       var stitle = typeof st.title === 'string' && st.title.trim() ? st.title.trim() : 'Step ' + (j + 1);
       if (!text) return { error: 'Step ' + (j + 1) + ' needs some text.' };
+      if (text.length > LIMITS.stepText) return { error: 'Step ' + (j + 1) + ' is too long.' };
       var refs = text.match(/\{\d{4}\}/g) || [];
       for (var k = 0; k < refs.length; k++) {
         if (!seen[refs[k].slice(1, 5)]) return { error: 'Step ' + (j + 1) + ' uses an ingredient that was removed.' };
@@ -617,7 +734,8 @@
     }
     var out = { title: title, base_servings: servings, ingredients: ings, steps: steps };
     if (typeof r.credit === 'string' && r.credit.trim()) out.credit = r.credit.trim();
-    if (typeof r.notes === 'string' && r.notes.trim()) out.notes = r.notes.trim();
+    if (typeof r.notes === 'string' && r.notes.trim()) out.notes = r.notes.trim().slice(0, LIMITS.notes);
+    if (r.example === true) out.example = true;
     if (Array.isArray(r.tags)) {
       var tags = [];
       r.tags.forEach(function (t) {
@@ -643,7 +761,7 @@
   }
   function uniqueSlug(title, taken) {
     var base = slugify(title), s = base, n = 2;
-    while (taken[s]) s = base + '-' + n++;
+    while (Object.prototype.hasOwnProperty.call(taken, s)) s = base + '-' + n++;
     return s;
   }
 
@@ -661,7 +779,7 @@
   // entries: [{ recipe, servings }]. Same ingredient across recipes is summed. With a known
   // grams_per_cup, volumes are folded into weight; otherwise volume and weight stay separate.
   function combineIngredients(entries) {
-    var map = {}, order = [];
+    var map = Object.create(null), order = [];
     entries.forEach(function (e) {
       var scale = e.servings / e.recipe.base_servings;
       e.recipe.ingredients.forEach(function (ing) {

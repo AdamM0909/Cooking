@@ -11,13 +11,14 @@ function reply(body, status, cors) {
 
 // Refuse addresses that point inside a network rather than at a public website.
 function isBlockedHost(host) {
-  host = host.toLowerCase().replace(/^\[|\]$/g, '');
+  host = host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, ''); // "localhost." is still localhost
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return true;
   if (host.indexOf(':') >= 0) return true; // raw IPv6 literals
   var m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
   if (m) {
-    var a = +m[1], b = +m[2];
-    return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+    var a = +m[1], b = +m[2], c = +m[3];
+    return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 192 && b === 0 && c === 0) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19));
   }
   return host.indexOf('.') < 0;
 }
@@ -25,10 +26,14 @@ function isBlockedHost(host) {
 export default {
   async fetch(request, env) {
     const allowed = (env && env.ALLOWED_ORIGIN) || '';
-    const cors = { 'Access-Control-Allow-Origin': allowed || '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', Vary: 'Origin' };
+    // Safe by default: until it is locked to one site it answers nobody, so it can never be used as an open proxy.
+    if (!allowed) {
+      return reply({ ok: false, error: 'This reader is not set up yet. In Cloudflare add a variable named ALLOWED_ORIGIN with your site address (see docs/LINK_IMPORT.md).' }, 503, { 'Access-Control-Allow-Origin': '*' });
+    }
+    const cors = { 'Access-Control-Allow-Origin': allowed, 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', Vary: 'Origin' };
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (request.method !== 'GET') return reply({ ok: false, error: 'Use GET.' }, 405, cors);
-    if (allowed && request.headers.get('Origin') !== allowed) return reply({ ok: false, error: 'This reader is private to another site.' }, 403, cors);
+    if (request.headers.get('Origin') !== allowed) return reply({ ok: false, error: 'This reader is private to another site.' }, 403, cors);
 
     let target;
     try { target = new URL(new URL(request.url).searchParams.get('url') || ''); } catch (e) { return reply({ ok: false, error: 'Give a web address in ?url=' }, 400, cors); }

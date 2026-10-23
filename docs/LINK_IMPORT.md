@@ -14,7 +14,7 @@ the recipe back. It is a free Cloudflare Worker, takes about 5 minutes, and runs
 - If a page has no such data, it sends back the page's text and the app works it out as it does for
   any pasted text. Check those results more carefully.
 - It does not store anything and uses no AI. It can see the web addresses you ask it to read, nothing else.
-- It refuses addresses inside private networks and, once you set `ALLOWED_ORIGIN`, answers only your site.
+- It refuses addresses inside private networks and answers only the site named in `ALLOWED_ORIGIN`.
 - Some sites block automated readers. If one does, use copy and paste for that site.
 
 ## Set it up
@@ -24,9 +24,10 @@ the recipe back. It is a free Cloudflare Worker, takes about 5 minutes, and runs
    like `our-kitchen-reader` and choose **Deploy** (it deploys a sample first, that is fine).
 3. Choose **Edit code**. Delete everything in the editor, then paste in the whole contents of
    [`worker/recipe-reader.js`](../worker/recipe-reader.js) from this repository. Choose **Deploy**.
-4. Lock it to your site so others cannot use it: open the Worker's **Settings > Variables and Secrets**,
-   add a variable named `ALLOWED_ORIGIN` with your site's address, for example
-   `https://adamm0909.github.io` (no path and no trailing slash), and deploy again.
+4. **Required:** tell it which site may use it. Open the Worker's **Settings > Variables and Secrets**, add a
+   variable named `ALLOWED_ORIGIN` with your site's address, for example `https://adamm0909.github.io` (no path and no
+   trailing slash), and deploy again. Until this is set the reader refuses every request, so it can never be used
+   by anyone else.
 5. Copy the Worker's address (it looks like `https://our-kitchen-reader.your-name.workers.dev`).
 6. In the app open **+ Add > Quick start > Reading links: one-time setup**, paste the address, and press
    **Save address**. The address is stored in your browser only, so repeat this once on each device.
